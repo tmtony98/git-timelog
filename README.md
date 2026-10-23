@@ -95,6 +95,8 @@ everything together.
 | First checkout or commit on a new branch | **doing** |
 | A merge commit names the branch (`Merge pull request #12 from you/feat-x`, `Merged in feat-x (pull request #12)`, `Merge branch 'feat-x'`) | **done** |
 | The branch is already contained in a base branch such as `main` (fast-forward merge, no merge commit) and you committed on it | **done** |
+| A base branch has the same changes as copies: one commit with the branch's whole diff (squash merge) or every commit replayed (rebase merge) | **done** |
+| The branch's remote copy was deleted (`git fetch --prune` shows it as gone), as hosts do after merging a PR | **done** |
 | Not merged, and you haven't been on the branch for `idle_hold_days` (3) | **on hold** (card shows "idle 5d") |
 | No activity for `stale_days` (7) when importing history | **done** |
 | You switch back to, or commit on, a held or done branch | **doing** again |
@@ -104,6 +106,11 @@ everything together.
 branches you only checked out to test or look around also go on hold. Moving a held card back
 to doing yourself gives it another `idle_hold_days` before the rule applies again. Cards you
 put on hold by hand say "on hold" instead of "idle Nd".
+
+Squash and rebase detection compares the changes themselves (git patch ids), not commit ids,
+and writes nothing to your repo. A squash is only recognised if the squash commit has exactly
+the branch's combined diff; if conflicts were resolved differently during the merge, close the
+task by hand.
 
 A branch you only created (no commits of your own yet) is never treated as merged, even
 though it sits inside `main`. Merge detection runs whenever new events arrive and at most

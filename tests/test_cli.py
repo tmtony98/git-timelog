@@ -98,6 +98,40 @@ class CliTest(unittest.TestCase):
         tasks = {t["branch"]: t for t in self.summary()["tasks"]}
         self.assertEqual(tasks["feat/ff"]["status"], "done")
 
+    def make_branch(self, name, *msgs):
+        self.git("checkout", "-q", "-b", name)
+        for i, m in enumerate(msgs):
+            (self.repo / f"{name.replace('/', '_')}{i}.txt").write_text(m + "\n")
+            self.git("add", "-A")
+            self.commit(m)
+        self.git("checkout", "-q", "main")
+
+    def status_of(self, branch):
+        return next(t for t in self.summary()["tasks"] if t["branch"] == branch)["status"]
+
+    def test_squash_merge_marks_task_done(self):
+        self.tl("init", "--days", "0")
+        self.make_branch("feat/squashed", "add form", "fix typo", "add validation")
+        time.sleep(1.1)  # the squash commit lands after the branch's last commit
+        self.git("merge", "-q", "--squash", "feat/squashed")
+        self.commit("Add login form (#42)")  # what GitHub's "Squash and merge" leaves behind
+        self.assertEqual(self.status_of("feat/squashed"), "done")
+
+    def test_rebase_merge_marks_task_done(self):
+        self.tl("init", "--days", "0")
+        self.make_branch("feat/rebased", "step one", "step two")
+        self.commit("someone else's work on main")  # so the copies below get new ids
+        # replay copies onto main, like "Rebase and merge"
+        for sha in self.git("rev-list", "--reverse", "main..feat/rebased").split():
+            self.git("cherry-pick", sha)
+        self.assertEqual(self.status_of("feat/rebased"), "done")
+
+    def test_unmerged_branch_with_similar_name_stays_open(self):
+        self.tl("init", "--days", "0")
+        self.make_branch("feat/open", "real work")
+        self.commit("unrelated change on main")
+        self.assertEqual(self.status_of("feat/open"), "doing")
+
     def test_fresh_branch_is_not_mistaken_for_merged(self):
         self.tl("init", "--days", "0")
         self.git("checkout", "-q", "-b", "feat/new")  # sits inside main, but no commits yet
