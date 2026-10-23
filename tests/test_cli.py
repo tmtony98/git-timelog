@@ -89,6 +89,42 @@ class CliTest(unittest.TestCase):
         tasks = {t["branch"]: t for t in self.summary()["tasks"]}
         self.assertEqual(tasks["fix/typo"]["status"], "doing")
 
+    def test_fast_forward_merge_marks_task_done(self):
+        self.tl("init", "--days", "0")
+        self.git("checkout", "-q", "-b", "feat/ff")
+        self.commit("small change")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--ff-only", "feat/ff")  # no merge commit at all
+        tasks = {t["branch"]: t for t in self.summary()["tasks"]}
+        self.assertEqual(tasks["feat/ff"]["status"], "done")
+
+    def test_fresh_branch_is_not_mistaken_for_merged(self):
+        self.tl("init", "--days", "0")
+        self.git("checkout", "-q", "-b", "feat/new")  # sits inside main, but no commits yet
+        tasks = {t["branch"]: t for t in self.summary()["tasks"]}
+        self.assertEqual(tasks["feat/new"]["status"], "doing")
+
+    def test_worktrees_share_the_main_repo_name(self):
+        self.tl("init", "--days", "0")
+        wt = Path(self.tmp.name) / "shop-web-feature"
+        self.git("worktree", "add", "-q", "-b", "feat/wt", str(wt))
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "work in worktree"], cwd=wt,
+                       env=self.env, check=True)
+        tasks = {t["branch"]: t for t in self.summary()["tasks"]}
+        self.assertEqual(tasks["feat/wt"]["repo"], "shop-web")
+        self.assertEqual(tasks["feat/wt"]["commits"], 1)
+
+    def test_projects_group_repos(self):
+        Path(self.env["GIT_TIMELOG_CONFIG"]).write_text("[projects]\nShop = shop-web, shop-api\n")
+        self.tl("init", "--days", "0")
+        self.git("checkout", "-q", "-b", "feat/cart")
+        self.commit("cart")
+        s = self.summary()
+        shop = next(p for p in s["projects"] if p["name"] == "Shop")
+        self.assertEqual(shop["repos"], ["shop-web", "shop-api"])
+        self.assertEqual(shop["kpi"]["commits_week"], 1)
+        self.assertEqual(next(t for t in s["tasks"] if t["branch"] == "feat/cart")["project"], "Shop")
+
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")
         self.tl("add", "Sprint planning")

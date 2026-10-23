@@ -5,7 +5,8 @@
   log="${GIT_TIMELOG_HOME:-$HOME/.local/share/git-timelog}/events.log"
   mkdir -p "$(dirname "$log")"
   name=$1; shift
-  repo=$(basename "$(git rev-parse --show-toplevel)")
+  # main checkout's name, shared by all worktrees of the repo
+  repo=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")
   branch=$(git rev-parse --abbrev-ref HEAD)
   sha=$(git rev-parse --short HEAD)
   case "$name" in

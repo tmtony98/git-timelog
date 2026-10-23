@@ -83,6 +83,15 @@ a { color: var(--accent); }
   .grid2 { grid-template-columns: 1fr; }
 }
 @media (max-width: 520px) { .board { grid-template-columns: 1fr; } }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -4px 0 20px; overflow-x: auto; }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 14px 9px;
+  color: var(--muted); white-space: nowrap; display: flex; gap: 8px; align-items: baseline; }
+.tab:hover { color: var(--ink); border-color: var(--line); }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.tab .n { font-size: 12px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+.projhead { display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px; }
+.projhead h2 { font-size: 20px; text-transform: none; letter-spacing: -0.01em; color: var(--ink); margin: 0; }
+.projhead span { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -95,13 +104,16 @@ a { color: var(--accent); }
     <button id="reportBtn">Write standup</button>
   </header>
 
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Projects"></nav>
+  <div class="projhead"><h2 id="projName"></h2><span id="projRepos"></span></div>
+
   <section class="kpis" id="kpis"></section>
 
   <section class="panel">
     <h2>Tasks</h2>
     <form class="addrow" id="addForm">
       <input id="addTitle" placeholder="New task (non-git work: meeting, design review…)" required>
-      <select id="addRepo"><option value="">no repo</option></select>
+      <select id="addRepo"></select>
       <button class="primary">Add</button>
     </form>
     <div class="board" id="board"></div>
@@ -120,7 +132,7 @@ a { color: var(--accent); }
   </div>
 
   <section class="panel" style="margin-top:20px">
-    <h2>All tasks</h2>
+    <h2 id="tableTitle">All tasks</h2>
     <div class="tablewrap"><table id="table"></table></div>
   </section>
 </div>
@@ -129,7 +141,10 @@ a { color: var(--accent); }
 <script>
 const STATUSES = ["todo", "doing", "review", "done"];
 const COLORS = Array.from({length: 8}, (_, i) => `var(--c${i})`);
-let data = null;
+let data = null;   // full summary from the server
+let view = null;   // the selected project's slice of it
+let project = null;
+const ALL = "All projects";
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ago = (ts) => {
@@ -148,15 +163,53 @@ async function api(path, method = "GET", body) {
 }
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2200); }
 
-async function load() {
-  data = await api("/api/summary");
-  const sel = $("addRepo"), keep = sel.value;
-  sel.innerHTML = '<option value="">no repo</option>' + data.repos.map(r => `<option>${esc(r)}</option>`).join("");
-  sel.value = keep;
+async function load() { data = await api("/api/summary"); pickProject(); render(); }
+
+// The selected project comes from the URL (#name, bookmarkable), then the last one used.
+function pickProject() {
+  const names = data.projects.map(p => p.name).concat(ALL);
+  let want = decodeURIComponent(location.hash.slice(1));
+  if (!names.includes(want)) { try { want = localStorage.getItem("git-timelog.project"); } catch (e) { want = null; } }
+  project = names.includes(want) ? want : names[0];
+}
+
+function setProject(name) {
+  project = name;
+  try { localStorage.setItem("git-timelog.project", name); } catch (e) {}
+  history.replaceState(null, "", "#" + encodeURIComponent(name));
   render();
 }
 
+function slice() {
+  if (project === ALL || !data.projects.length) return data;
+  const p = data.projects.find(x => x.name === project);
+  const tasks = data.tasks.filter(t => t.project === project);
+  const ids = new Set(tasks.map(t => String(t.id)));
+  return {
+    ...data, kpi: p.kpi, repos: p.repos, tasks,
+    days: data.days.map(d => ({date: d.date, tasks: Object.fromEntries(Object.entries(d.tasks).filter(([id]) => ids.has(id)))})),
+    activity: data.activity.filter(e => e.project === project),
+  };
+}
+
+function renderTabs() {
+  const tabs = data.projects.map(p => ({name: p.name, kpi: p.kpi})).concat([{name: ALL, kpi: data.kpi}]);
+  $("tabs").innerHTML = tabs.map(t => `<button class="tab" role="tab" aria-selected="${t.name === project}" data-p="${esc(t.name)}">
+    ${esc(t.name)}<span class="n">${t.kpi.active} active · ${fmtH(t.kpi.week)} wk</span></button>`).join("");
+  $("tabs").querySelectorAll(".tab").forEach(b => b.onclick = () => setProject(b.dataset.p));
+  $("projName").textContent = project;
+  $("projRepos").textContent = view.repos.length === 1 && view.repos[0] === project ? "" : view.repos.join(" · ");
+  $("tableTitle").textContent = project === ALL ? "All tasks" : `All ${project} tasks`;
+  const sel = $("addRepo"), keep = sel.value;
+  sel.innerHTML = view.repos.map(r => `<option>${esc(r)}</option>`).join("") + '<option value="">no repo</option>';
+  if (view.repos.includes(keep)) sel.value = keep;
+  document.title = `${data.title} · ${project}`;
+}
+
 function render() {
+  view = slice();
+  renderTabs();
+  const data = view;
   const k = data.kpi;
   $("kpis").innerHTML = [
     [fmtH(k.today), "Hours today"], [fmtH(k.week), "Hours this week"],
@@ -200,7 +253,7 @@ function render() {
   $("legend").innerHTML = data.tasks.filter(t => used.has(t.id)).sort((a, b) => chartHours[b.id] - chartHours[a.id]).slice(0, 8)
     .map(t => `<span><i style="background:${colorOf[t.id]}"></i>${esc(t.title)}</span>`).join("");
 
-  $("feed").innerHTML = data.activity.map(e => `<li><time>${ago(e.ts)}</time><div>
+  $("feed").innerHTML = data.activity.slice(0, 40).map(e => `<li><time>${ago(e.ts)}</time><div>
     <div>${e.kind === "checkout" ? "switched to <b>" + esc(e.branch) + "</b>" : esc(e.subject)}</div>
     <div class="k">${esc(e.kind)} · ${esc(e.repo)}${e.kind !== "checkout" ? " · " + esc(e.branch) : ""}</div></div></li>`).join("")
     || "<li>No activity yet. Run <code>git timelog init</code> in a repo, then commit.</li>";

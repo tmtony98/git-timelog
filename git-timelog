@@ -22,7 +22,7 @@ from fnmatch import fnmatch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 HOME = Path.home()
 DATA = Path(os.environ.get("GIT_TIMELOG_HOME") or HOME / ".local/share/git-timelog")
@@ -50,12 +50,13 @@ DEFAULTS = {
 MERGE_PATTERNS = [
     re.compile(r"Merged in (?P<b>\S+) \(pull request #\d+\)"),          # Bitbucket
     re.compile(r"Merge pull request #\d+ from [^/\s]+/(?P<b>\S+)"),      # GitHub
-    re.compile(r"Merge branch '(?P<b>[^']+)' into"),                     # GitLab / plain git
+    re.compile(r"Merge branch '(?P<b>[^']+)'"),                          # GitLab / plain git
 ]
 
 
 def load_conf():
     cp = configparser.ConfigParser()
+    cp.optionxform = str  # keep project names' case
     cp["git-timelog"] = DEFAULTS
     cp.read(CONF_PATH)
     return cp
@@ -73,6 +74,29 @@ def save_conf():
 
 def repos():
     return [Path(p.strip()) for p in C["repos"].split(",") if p.strip()]
+
+
+GENERAL = "General"
+
+
+def projects():
+    """[projects] config section: "Name = repo, repo". Unlisted repos are their own project."""
+    if not CP.has_section("projects"):
+        return {}
+    return {name: [r.strip() for r in v.split(",") if r.strip()] for name, v in CP["projects"].items()}
+
+
+def project_of(repo, table=None):
+    for name, members in (projects() if table is None else table).items():
+        if repo in members:
+            return name
+    return repo or GENERAL
+
+
+def repo_name(repo):
+    """Name of the main checkout, so every worktree of a repo shares one name."""
+    common = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    return Path(common).parent.name if common else Path(repo).name
 
 
 def is_base(branch):
@@ -112,6 +136,9 @@ def db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    if "reopened" not in [r[1] for r in con.execute("PRAGMA table_info(tasks)")]:
+        # when you last moved the task off "done"; older merges must not undo that
+        con.execute("ALTER TABLE tasks ADD COLUMN reopened INTEGER")
     return con
 
 
@@ -127,22 +154,23 @@ def ensure_task(con, repo, branch, ts):
     return cur.lastrowid
 
 
-def add_event(con, ts, kind, repo, branch, sha, subject):
+def add_event(con, ts, kind, repo, branch, sha, subject, live=False):
     con.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?)",
                 (ts, kind, repo, branch, sha, subject))
     ensure_task(con, repo, branch, ts)
     if kind == "checkout" and subject.startswith("from:"):
         ensure_task(con, repo, subject[5:], ts)
-    if kind in ("checkout", "commit"):
-        # Back on a finished branch => working on it again (only if newer than its merge).
-        con.execute("UPDATE tasks SET status='doing', updated=? WHERE repo=? AND branch=? "
-                    "AND status='done' AND updated < ?", (ts, repo, branch, ts))
+    if live and kind in ("checkout", "commit"):
+        # Back on a finished branch => working on it again. Only for events as they
+        # happen: replayed history must not reopen tasks that shipped long ago.
+        con.execute("UPDATE tasks SET status='doing', updated=?, reopened=? WHERE repo=? AND branch=? "
+                    "AND status='done' AND updated < ?", (ts, ts, repo, branch, ts))
     if kind in ("commit", "merge"):
         for pat in MERGE_PATTERNS:
             m = pat.match(subject)
             if m and ensure_task(con, repo, m.group("b"), ts):
-                con.execute("UPDATE tasks SET status='done', updated=MAX(updated, ?) WHERE repo=? AND branch=?",
-                            (ts, repo, m.group("b")))
+                con.execute("UPDATE tasks SET status='done', updated=MAX(updated, ?) WHERE repo=? AND branch=? "
+                            "AND COALESCE(reopened, 0) < ?", (ts, repo, m.group("b"), ts))
                 break
 
 
@@ -164,18 +192,55 @@ def ingest(con):
             if len(parts) < 6:
                 continue
             ts, kind, repo, branch, sha, subject = parts[:6]
-            add_event(con, int(ts), kind, repo, branch, sha, subject)
+            add_event(con, int(ts), kind, repo, branch, sha, subject, live=True)
             n += 1
     con.execute("INSERT OR REPLACE INTO meta VALUES('offset', ?)", (str(offset),))
+    row = con.execute("SELECT v FROM meta WHERE k='merged_check'").fetchone()
+    if n or not row or now() - int(row["v"]) > 300:
+        mark_merged(con)
     con.commit()
     return n
+
+
+def mark_merged(con, only=None):
+    """Mark tasks done whose branch is already contained in a base branch.
+
+    Fast-forward and squash-free merges leave no "Merge ..." commit, so ask git
+    which branches are inside main/develop/etc. A branch only counts if you
+    committed on it (a fresh branch also sits inside main) and you haven't
+    reopened it since its last commit.
+    """
+    seen = set()
+    for repo in only or repos():
+        name = repo_name(repo)
+        if name in seen:
+            continue
+        seen.add(name)
+        remotes = git(repo, "remote").split()
+        bases = []
+        for ref in git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes").split():
+            head, _, rest = ref.partition("/")
+            short = rest if head in remotes else ref  # origin/main -> main
+            if short not in ("", "HEAD") and ref not in remotes and is_base(short):
+                bases.append(ref)
+        merged = set()
+        for b in bases:
+            merged.update(git(repo, "branch", "--merged", b, "--format=%(refname:short)").split())
+        for branch in merged:
+            tip = git(repo, "log", "-1", "--format=%ct", branch).strip()
+            if is_base(branch) or not tip:
+                continue
+            con.execute("UPDATE tasks SET status='done' WHERE repo=? AND branch=? AND status!='done' "
+                        "AND COALESCE(reopened, 0) < ? AND EXISTS (SELECT 1 FROM events e WHERE e.kind='commit' "
+                        "AND e.repo=tasks.repo AND e.branch=tasks.branch)", (name, branch, int(tip)))
+    con.execute("INSERT OR REPLACE INTO meta VALUES('merged_check', ?)", (str(now()),))
 
 
 def backfill(con, days, only=None):
     n = 0
     since = now() - days * 86400
     for repo in only or repos():
-        name = repo.name
+        name = repo_name(repo)
         author = C["author"] or git(repo, "config", "user.email").strip()
         out = git(repo, "log", "--all", "--source", "-i", f"--author={author}",
                   f"--since={days}.days", "--format=%at%x09%S%x09%h%x09%s")
@@ -191,6 +256,7 @@ def backfill(con, days, only=None):
                 add_event(con, int(m.group(1)), "checkout", name, m.group(3), "", "from:" + m.group(2))
                 n += 1
     mark_stale(con)
+    mark_merged(con, only)
     con.commit()
     return n
 
@@ -214,17 +280,17 @@ def intervals(con):
     """
     gap, lead = int(C["session_gap_min"]) * 60, int(C["lead_in_min"]) * 60
     tasks = {(r["repo"], r["branch"]): r["id"] for r in con.execute("SELECT id, repo, branch FROM tasks")}
-    out, current, last_ts = [], {}, None
+    out, last_ts = [], None
     for e in con.execute("SELECT * FROM events ORDER BY ts"):
         repo, ts = e["repo"], e["ts"]
-        before = e["subject"][5:] if e["kind"] == "checkout" else current.get(repo, e["branch"])
+        # Commits know their branch (worktrees can have several checked out at once).
+        before = e["subject"][5:] if e["kind"] == "checkout" else e["branch"]
         tid = tasks.get((repo, before))
         if last_ts is not None and ts - last_ts < gap:
             if tid:
                 out.append((tid, last_ts, ts, "git"))
         elif tid and e["kind"] != "checkout":
             out.append((tid, ts - lead, ts, "git"))
-        current[repo] = e["branch"]
         last_ts = ts
     for r in con.execute("SELECT task_id, start, COALESCE(end, ?) AS end, source FROM entries", (now(),)):
         out.append((r["task_id"], r["start"], r["end"], r["source"]))
@@ -259,21 +325,45 @@ def summary(con):
                        for k, v in per_day.get(today - dt.timedelta(days=13 - i), {}).items()}}
             for i in range(14)]
 
-    def hrs(pred):
-        return round(sum(sum(v.values()) for d, v in per_day.items() if pred(d)) / 3600, 1)
+    table = projects()
+    for t in tasks:
+        t["project"] = project_of(t["repo"], table)
+    proj_of_task = {t["id"]: t["project"] for t in tasks}
+    wk_commits = {}
+    for r in con.execute("SELECT repo, COUNT(*) n FROM events WHERE kind='commit' AND ts>=? GROUP BY repo",
+                         (int(dt.datetime.combine(week_start, dt.time()).timestamp()),)):
+        p = project_of(r["repo"], table)
+        wk_commits[p] = wk_commits.get(p, 0) + r["n"]
 
-    wk_commits = con.execute("SELECT COUNT(*) FROM events WHERE kind='commit' AND ts>=?",
-                             (int(dt.datetime.combine(week_start, dt.time()).timestamp()),)).fetchone()[0]
+    def kpi(project=None):
+        def mine(tid):
+            return project is None or proj_of_task.get(tid) == project
+
+        def hrs(pred):
+            return round(sum(sec for d, v in per_day.items() if pred(d)
+                             for tid, sec in v.items() if mine(tid)) / 3600, 1)
+        return {"today": hrs(lambda d: d == today), "week": hrs(lambda d: d >= week_start),
+                "active": sum(1 for t in tasks if mine(t["id"]) and t["status"] in ("doing", "review")),
+                "commits_week": sum(n for p, n in wk_commits.items() if project is None or p == project)}
+
+    tracked = {repo_name(r) for r in repos()}
+    names = list(table) + sorted(({t["project"] for t in tasks} | {project_of(r, table) for r in tracked})
+                                 - set(table) - {GENERAL})
+    if any(t["project"] == GENERAL for t in tasks):
+        names.append(GENERAL)
+    members = {n: table.get(n) or sorted({r for r in tracked if project_of(r, table) == n}
+                                         | {t["repo"] for t in tasks if t["project"] == n and t["repo"]})
+               for n in names}
     timer = con.execute("SELECT e.*, t.title FROM entries e JOIN tasks t ON t.id=e.task_id "
                         "WHERE e.end IS NULL").fetchone()
     return {
         "title": C["title"], "version": __version__,
-        "kpi": {"today": hrs(lambda d: d == today), "week": hrs(lambda d: d >= week_start),
-                "active": sum(1 for t in tasks if t["status"] in ("doing", "review")),
-                "commits_week": wk_commits},
-        "repos": sorted({r.name for r in repos()} | {t["repo"] for t in tasks if t["repo"]}),
+        "kpi": kpi(),
+        "projects": [{"name": n, "repos": members[n], "kpi": kpi(n)} for n in names],
+        "repos": sorted(tracked | {t["repo"] for t in tasks if t["repo"]}),
         "tasks": tasks, "days": days,
-        "activity": [dict(r) for r in con.execute("SELECT * FROM events ORDER BY ts DESC LIMIT 40")],
+        "activity": [{**dict(r), "project": project_of(r["repo"], table)}
+                     for r in con.execute("SELECT * FROM events ORDER BY ts DESC LIMIT 300")],
         "timer": dict(timer) if timer else None,
     }
 
@@ -313,6 +403,8 @@ def update_task(con, tid, fields):
     allowed = {k: v for k, v in fields.items() if k in ("title", "status", "ticket", "pr_url", "note")}
     if "status" in allowed and allowed["status"] not in STATUSES:
         raise ValueError(f"status must be one of {', '.join(STATUSES)}")
+    if allowed.get("status") not in (None, "done"):
+        allowed["reopened"] = now()  # your choice wins over older merge commits
     if allowed:
         sets = ", ".join(f"{k}=?" for k in allowed)
         con.execute(f"UPDATE tasks SET {sets}, updated=? WHERE id=?", (*allowed.values(), now(), tid))
