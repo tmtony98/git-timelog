@@ -1,0 +1,8 @@
+[Unit]
+Description=git timelog dashboard (socket-activated, exits when idle)
+Requires=git-timelog.socket
+
+[Service]
+ExecStart=@BIN@ serve
+Nice=10
+MemoryMax=64M

@@ -1,0 +1,684 @@
+#!/usr/bin/env python3
+"""git timelog — your git history is already a timesheet.
+
+Git hooks append events to a log; this script ingests them into SQLite,
+estimates time per branch, serves a local dashboard and writes daily
+standup notes. Python 3.8+ standard library only.
+
+Usage: git timelog <command>   (run `git timelog -h` for the list)
+"""
+import argparse
+import configparser
+import datetime as dt
+import json
+import os
+import random
+import re
+import socket
+import sqlite3
+import subprocess
+import sys
+from fnmatch import fnmatch
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+__version__ = "0.1.0"
+
+HOME = Path.home()
+DATA = Path(os.environ.get("GIT_TIMELOG_HOME") or HOME / ".local/share/git-timelog")
+CONF_PATH = Path(os.environ.get("GIT_TIMELOG_CONFIG") or HOME / ".config/git-timelog/config.ini")
+DB_PATH = DATA / "timelog.db"
+LOG_PATH = DATA / "events.log"
+HOOK_MARK = "# git-timelog"
+HOOK_NAMES = ("post-checkout", "post-commit", "post-merge")
+STATUSES = ("todo", "doing", "review", "done")
+
+DEFAULTS = {
+    "repos": "",
+    "author": "",  # empty = each repo's git config user.email
+    "base_branches": "main,master,develop,dev,dev_*,development,staging,prod,production,release/*,HEAD",
+    "session_gap_min": "120",
+    "lead_in_min": "30",
+    "stale_days": "7",
+    "idle_exit_min": "10",
+    "port": "7777",
+    "standup_dir": str(HOME / "Documents/git-timelog/standups"),
+    "title": "git timelog",
+}
+
+# Merge-commit subjects that mean "branch X shipped".
+MERGE_PATTERNS = [
+    re.compile(r"Merged in (?P<b>\S+) \(pull request #\d+\)"),          # Bitbucket
+    re.compile(r"Merge pull request #\d+ from [^/\s]+/(?P<b>\S+)"),      # GitHub
+    re.compile(r"Merge branch '(?P<b>[^']+)' into"),                     # GitLab / plain git
+]
+
+
+def load_conf():
+    cp = configparser.ConfigParser()
+    cp["git-timelog"] = DEFAULTS
+    cp.read(CONF_PATH)
+    return cp
+
+
+CP = load_conf()
+C = CP["git-timelog"]
+
+
+def save_conf():
+    CONF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONF_PATH, "w") as f:
+        CP.write(f)
+
+
+def repos():
+    return [Path(p.strip()) for p in C["repos"].split(",") if p.strip()]
+
+
+def is_base(branch):
+    if not branch or branch.startswith("refs/") or re.fullmatch(r"[0-9a-f]{7,40}", branch):
+        return True  # stash/tag refs, detached HEAD
+    return any(fnmatch(branch, p.strip()) for p in C["base_branches"].split(","))
+
+
+def now():
+    return int(dt.datetime.now().timestamp())
+
+
+def git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                          text=True, check=False).stdout
+
+
+# ---------------------------------------------------------------- database
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks(
+  id INTEGER PRIMARY KEY, repo TEXT, branch TEXT, title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'doing', ticket TEXT, pr_url TEXT, note TEXT,
+  created INTEGER, updated INTEGER, UNIQUE(repo, branch));
+CREATE TABLE IF NOT EXISTS events(
+  ts INTEGER, kind TEXT, repo TEXT, branch TEXT, sha TEXT, subject TEXT,
+  UNIQUE(ts, kind, repo, branch, sha));
+CREATE TABLE IF NOT EXISTS entries(
+  id INTEGER PRIMARY KEY, task_id INTEGER, start INTEGER, end INTEGER,
+  note TEXT, source TEXT);
+CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+"""
+
+
+def db():
+    DATA.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    con.executescript(SCHEMA)
+    return con
+
+
+def ensure_task(con, repo, branch, ts):
+    if is_base(branch):
+        return None
+    row = con.execute("SELECT id FROM tasks WHERE repo=? AND branch=?", (repo, branch)).fetchone()
+    if row:
+        return row["id"]
+    cur = con.execute(
+        "INSERT INTO tasks(repo, branch, title, status, created, updated) VALUES(?,?,?,?,?,?)",
+        (repo, branch, branch, "doing", ts, ts))
+    return cur.lastrowid
+
+
+def add_event(con, ts, kind, repo, branch, sha, subject):
+    con.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?)",
+                (ts, kind, repo, branch, sha, subject))
+    ensure_task(con, repo, branch, ts)
+    if kind == "checkout" and subject.startswith("from:"):
+        ensure_task(con, repo, subject[5:], ts)
+    if kind in ("commit", "merge"):
+        for pat in MERGE_PATTERNS:
+            m = pat.match(subject)
+            if m and ensure_task(con, repo, m.group("b"), ts):
+                con.execute("UPDATE tasks SET status='done', updated=MAX(updated, ?) WHERE repo=? AND branch=?",
+                            (ts, repo, m.group("b")))
+                break
+
+
+def ingest(con):
+    if not LOG_PATH.exists():
+        return 0
+    row = con.execute("SELECT v FROM meta WHERE k='offset'").fetchone()
+    offset = int(row["v"]) if row else 0
+    if LOG_PATH.stat().st_size < offset:
+        offset = 0
+    n = 0
+    with open(LOG_PATH, "rb") as f:
+        f.seek(offset)
+        for raw in f:
+            if not raw.endswith(b"\n"):
+                break  # partial line still being written
+            offset += len(raw)
+            parts = raw.decode("utf-8", "replace").rstrip("\n").split("\t")
+            if len(parts) < 6:
+                continue
+            ts, kind, repo, branch, sha, subject = parts[:6]
+            add_event(con, int(ts), kind, repo, branch, sha, subject)
+            n += 1
+    con.execute("INSERT OR REPLACE INTO meta VALUES('offset', ?)", (str(offset),))
+    con.commit()
+    return n
+
+
+def backfill(con, days, only=None):
+    n = 0
+    since = now() - days * 86400
+    for repo in only or repos():
+        name = repo.name
+        author = C["author"] or git(repo, "config", "user.email").strip()
+        out = git(repo, "log", "--all", "--source", "-i", f"--author={author}",
+                  f"--since={days}.days", "--format=%at%x09%S%x09%h%x09%s")
+        for line in out.splitlines():
+            ts, ref, sha, subject = (line.split("\t", 3) + [""] * 4)[:4]
+            branch = re.sub(r"^refs/(heads|remotes/[^/]+)/", "", ref)
+            add_event(con, int(ts), "commit", name, branch, sha, subject)
+            n += 1
+        out = git(repo, "reflog", "--date=unix", "--format=%gd%x09%gs")
+        for line in out.splitlines():
+            m = re.match(r"HEAD@\{(\d+)\}\tcheckout: moving from (\S+) to (\S+)", line)
+            if m and int(m.group(1)) >= since:
+                add_event(con, int(m.group(1)), "checkout", name, m.group(3), "", "from:" + m.group(2))
+                n += 1
+    mark_stale(con)
+    con.commit()
+    return n
+
+
+def mark_stale(con):
+    """Branches with no activity for stale_days are assumed shipped."""
+    cutoff = now() - int(C["stale_days"]) * 86400
+    con.execute("UPDATE tasks SET status='done' WHERE branch IS NOT NULL AND status='doing' AND id NOT IN "
+                "(SELECT t.id FROM tasks t JOIN events e ON e.repo=t.repo AND e.branch=t.branch WHERE e.ts>=?)",
+                (cutoff,))
+
+
+# ---------------------------------------------------------------- time model
+
+def intervals(con):
+    """Return [(task_id, start, end, source)] from git events + manual entries.
+
+    Walk events in time order. The gap since the previous event belongs to the
+    branch that was checked out during it, if shorter than the session gap;
+    otherwise a new session starts and its first commit gets a lead-in credit.
+    """
+    gap, lead = int(C["session_gap_min"]) * 60, int(C["lead_in_min"]) * 60
+    tasks = {(r["repo"], r["branch"]): r["id"] for r in con.execute("SELECT id, repo, branch FROM tasks")}
+    out, current, last_ts = [], {}, None
+    for e in con.execute("SELECT * FROM events ORDER BY ts"):
+        repo, ts = e["repo"], e["ts"]
+        before = e["subject"][5:] if e["kind"] == "checkout" else current.get(repo, e["branch"])
+        tid = tasks.get((repo, before))
+        if last_ts is not None and ts - last_ts < gap:
+            if tid:
+                out.append((tid, last_ts, ts, "git"))
+        elif tid and e["kind"] != "checkout":
+            out.append((tid, ts - lead, ts, "git"))
+        current[repo] = e["branch"]
+        last_ts = ts
+    for r in con.execute("SELECT task_id, start, COALESCE(end, ?) AS end, source FROM entries", (now(),)):
+        out.append((r["task_id"], r["start"], r["end"], r["source"]))
+    return out
+
+
+def summary(con):
+    ingest(con)
+    today = dt.date.today()
+    week_start = today - dt.timedelta(days=today.weekday())
+    per_task, per_day = {}, {}
+    for tid, s, e, _ in intervals(con):
+        sec = max(0, e - s)
+        per_task[tid] = per_task.get(tid, 0) + sec
+        d = dt.date.fromtimestamp(s)
+        per_day.setdefault(d, {}).setdefault(tid, 0)
+        per_day[d][tid] += sec
+    commits = {r["id"]: dict(r) for r in con.execute(
+        "SELECT t.id, COUNT(*) n, MAX(e.ts) last FROM events e "
+        "JOIN tasks t ON t.repo=e.repo AND t.branch=e.branch WHERE e.kind='commit' GROUP BY t.id")}
+    last_subject = {r["id"]: r["subject"] for r in con.execute(
+        "SELECT t.id, e.subject FROM events e JOIN tasks t ON t.repo=e.repo AND t.branch=e.branch "
+        "WHERE e.kind='commit' ORDER BY e.ts")}
+    tasks = []
+    for t in con.execute("SELECT * FROM tasks ORDER BY updated DESC"):
+        c = commits.get(t["id"], {})
+        tasks.append({**dict(t), "hours": round(per_task.get(t["id"], 0) / 3600, 2),
+                      "commits": c.get("n", 0), "last": max(c.get("last") or 0, t["updated"] or 0),
+                      "last_subject": last_subject.get(t["id"], "")})
+    days = [{"date": (today - dt.timedelta(days=13 - i)).isoformat(),
+             "tasks": {str(k): round(v / 3600, 2)
+                       for k, v in per_day.get(today - dt.timedelta(days=13 - i), {}).items()}}
+            for i in range(14)]
+
+    def hrs(pred):
+        return round(sum(sum(v.values()) for d, v in per_day.items() if pred(d)) / 3600, 1)
+
+    wk_commits = con.execute("SELECT COUNT(*) FROM events WHERE kind='commit' AND ts>=?",
+                             (int(dt.datetime.combine(week_start, dt.time()).timestamp()),)).fetchone()[0]
+    timer = con.execute("SELECT e.*, t.title FROM entries e JOIN tasks t ON t.id=e.task_id "
+                        "WHERE e.end IS NULL").fetchone()
+    return {
+        "title": C["title"], "version": __version__,
+        "kpi": {"today": hrs(lambda d: d == today), "week": hrs(lambda d: d >= week_start),
+                "active": sum(1 for t in tasks if t["status"] in ("doing", "review")),
+                "commits_week": wk_commits},
+        "repos": sorted({r.name for r in repos()} | {t["repo"] for t in tasks if t["repo"]}),
+        "tasks": tasks, "days": days,
+        "activity": [dict(r) for r in con.execute("SELECT * FROM events ORDER BY ts DESC LIMIT 40")],
+        "timer": dict(timer) if timer else None,
+    }
+
+
+# ---------------------------------------------------------------- mutations
+
+def find_task(con, ref):
+    if str(ref).isdigit():
+        row = con.execute("SELECT * FROM tasks WHERE id=?", (int(ref),)).fetchone()
+    else:
+        row = con.execute("SELECT * FROM tasks WHERE title=? OR branch=? ORDER BY updated DESC",
+                          (ref, ref)).fetchone()
+    if not row:
+        raise SystemExit(f"git-timelog: no task '{ref}'")
+    return row
+
+
+def current_task(con):
+    """Task for the branch checked out in the current directory, if any."""
+    top = git(".", "rev-parse", "--show-toplevel").strip()
+    branch = git(".", "rev-parse", "--abbrev-ref", "HEAD").strip()
+    if not top or is_base(branch):
+        return None
+    tid = ensure_task(con, Path(top).name, branch, now())
+    con.commit()
+    return con.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+
+
+def create_task(con, title, repo=None, status="todo"):
+    cur = con.execute("INSERT INTO tasks(repo, branch, title, status, created, updated) VALUES(?,?,?,?,?,?)",
+                      (repo, None, title, status, now(), now()))
+    con.commit()
+    return cur.lastrowid
+
+
+def update_task(con, tid, fields):
+    allowed = {k: v for k, v in fields.items() if k in ("title", "status", "ticket", "pr_url", "note")}
+    if "status" in allowed and allowed["status"] not in STATUSES:
+        raise ValueError(f"status must be one of {', '.join(STATUSES)}")
+    if allowed:
+        sets = ", ".join(f"{k}=?" for k in allowed)
+        con.execute(f"UPDATE tasks SET {sets}, updated=? WHERE id=?", (*allowed.values(), now(), tid))
+        con.commit()
+
+
+def timer_start(con, tid):
+    timer_stop(con)
+    con.execute("INSERT INTO entries(task_id, start, end, note, source) VALUES(?,?,NULL,'','timer')",
+                (tid, now()))
+    con.execute("UPDATE tasks SET status='doing', updated=? WHERE id=? AND status='todo'", (now(), tid))
+    con.commit()
+
+
+def timer_stop(con):
+    con.execute("UPDATE entries SET end=? WHERE end IS NULL", (now(),))
+    con.commit()
+
+
+def log_time(con, tid, minutes, note=""):
+    end = now()
+    con.execute("INSERT INTO entries(task_id, start, end, note, source) VALUES(?,?,?,?,'manual')",
+                (tid, end - minutes * 60, end, note))
+    con.commit()
+
+
+def parse_duration(s):
+    m = re.fullmatch(r"(?:(\d+(?:\.\d+)?)h)?\s*(?:(\d+)m)?", s.strip())
+    if not m or not any(m.groups()):
+        raise SystemExit(f"git-timelog: bad duration '{s}' (use 45m, 1h, 1h30m)")
+    return int(float(m.group(1) or 0) * 60 + int(m.group(2) or 0))
+
+
+# ---------------------------------------------------------------- report
+
+def report(con, day=None):
+    s = summary(con)
+    day = day or dt.date.today()
+    names = {t["id"]: t for t in s["tasks"]}
+    start = int(dt.datetime.combine(day, dt.time()).timestamp())
+    end = start + 86400
+    per = {}
+    for tid, a, b, _ in intervals(con):
+        if start <= a < end:
+            per[tid] = per.get(tid, 0) + (b - a)
+    lines = ["---", f"date: {day.isoformat()}", "tags: [standup, git-timelog]",
+             f"hours: {round(sum(per.values()) / 3600, 1)}", "---", f"# Standup {day.isoformat()}", "",
+             "## Done / worked on"]
+    by_branch = {}
+    for e in con.execute("SELECT * FROM events WHERE kind='commit' AND ts>=? AND ts<? ORDER BY ts", (start, end)):
+        by_branch.setdefault((e["repo"], e["branch"]), []).append(e["subject"])
+    if not by_branch:
+        lines.append("- (no commits)")
+    for (repo, br), subs in by_branch.items():
+        lines.append(f"- **{br}** ({repo})")
+        lines += [f"  - {x}" for x in subs]
+    lines += ["", "## Time", "| Task | Status | Hours |", "|---|---|---|"]
+    for tid, sec in sorted(per.items(), key=lambda x: -x[1]):
+        if tid in names:
+            lines.append(f"| {names[tid]['title']} | {names[tid]['status']} | {sec / 3600:.1f} |")
+    lines += ["", "## In progress"]
+    lines += [f"- {t['title']} — {t['status']}" for t in s["tasks"] if t["status"] in ("doing", "review")] or ["- none"]
+    lines += ["", "## Blockers", "- ", ""]
+    out = Path(os.path.expanduser(C["standup_dir"]))
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{day.isoformat()}.md"
+    path.write_text("\n".join(lines))
+    return path
+
+
+# ---------------------------------------------------------------- server
+
+def web_dir():
+    for d in (Path(__file__).resolve().parent / "web", DATA / "web"):
+        if (d / "index.html").exists():
+            return d
+    raise SystemExit("git-timelog: web/index.html not found; re-run install.sh")
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def send(self, code, body, ctype="application/json"):
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        return json.loads(self.rfile.read(n) or b"{}")
+
+    def route(self, method):
+        # Only same-origin browser requests may mutate (blocks drive-by POSTs from other sites).
+        origin = self.headers.get("Origin")
+        if method != "GET" and origin and origin != f"http://{self.headers.get('Host')}":
+            return self.send(403, {"error": "cross-origin request refused"})
+        con = db()
+        try:
+            p = self.path.split("?")[0]
+            if method == "GET" and p in ("/", "/index.html"):
+                return self.send(200, (web_dir() / "index.html").read_bytes(), "text/html; charset=utf-8")
+            if method == "GET" and p == "/api/summary":
+                return self.send(200, summary(con))
+            if method == "POST" and p == "/api/task":
+                b = self.body()
+                return self.send(201, {"id": create_task(con, b["title"].strip(), b.get("repo"))})
+            m = re.fullmatch(r"/api/task/(\d+)", p)
+            if method == "PATCH" and m:
+                update_task(con, int(m.group(1)), self.body())
+                return self.send(200, {"ok": True})
+            if method == "POST" and p == "/api/timer":
+                b = self.body()
+                timer_start(con, int(b["task_id"])) if b.get("action") == "start" else timer_stop(con)
+                return self.send(200, {"ok": True})
+            if method == "POST" and p == "/api/log":
+                b = self.body()
+                log_time(con, int(b["task_id"]), int(b["minutes"]), b.get("note", ""))
+                return self.send(200, {"ok": True})
+            if method == "POST" and p == "/api/report":
+                return self.send(200, {"path": str(report(con))})
+            self.send(404, {"error": "not found"})
+        except (KeyError, ValueError, TypeError) as e:
+            self.send(400, {"error": str(e)})
+        finally:
+            con.close()
+
+    def do_GET(self):
+        self.route("GET")
+
+    def do_POST(self):
+        self.route("POST")
+
+    def do_PATCH(self):
+        self.route("PATCH")
+
+
+def serve(port=None):
+    idle = int(C["idle_exit_min"]) * 60
+    if os.environ.get("LISTEN_FDS") == "1":  # systemd socket activation: fd 3
+        srv = HTTPServer(("127.0.0.1", 0), Handler, bind_and_activate=False)
+        srv.socket = socket.socket(fileno=3)
+    else:
+        srv = HTTPServer(("127.0.0.1", port or int(C["port"])), Handler)
+        print(f"git timelog dashboard: http://localhost:{srv.server_port}  (Ctrl-C to stop)")
+        idle = 0
+    srv.timeout = idle or None
+    state = {"idle": False}
+    srv.handle_timeout = lambda: state.update(idle=True)
+    try:
+        while not state["idle"]:
+            srv.handle_request()
+    except KeyboardInterrupt:
+        pass
+
+
+# ---------------------------------------------------------------- setup
+
+def hook_script():
+    for p in (Path(__file__).resolve().parent / "hooks/hook.sh", DATA / "hooks/hook.sh"):
+        if p.exists():
+            return p
+    raise SystemExit("git-timelog: hooks/hook.sh not found; re-run install.sh")
+
+
+def init_repo(path, days):
+    top = git(path, "rev-parse", "--show-toplevel").strip()
+    if not top:
+        raise SystemExit(f"git-timelog: {path} is not a git repository")
+    repo = Path(top)
+    hooks_dir = Path(git(repo, "rev-parse", "--git-path", "hooks").strip())
+    if not hooks_dir.is_absolute():
+        hooks_dir = repo / hooks_dir
+    git_dir = Path(git(repo, "rev-parse", "--absolute-git-dir").strip())
+    if git_dir not in hooks_dir.resolve().parents:
+        # core.hooksPath points into the work tree (Husky etc.): those files are
+        # committed or regenerated, so don't edit them behind the user's back.
+        hook = hook_script()
+        print(f"hooks live in {hooks_dir} (core.hooksPath); add this line to post-checkout,\n"
+              f"post-commit and post-merge there yourself, replacing NAME with the hook name:\n"
+              f'  [ -x "{hook}" ] && "{hook}" NAME "$@"; true  {HOOK_MARK}')
+    else:
+        install_hooks(hooks_dir)
+    listed = [str(p) for p in repos()]
+    if str(repo) not in listed:
+        C["repos"] = ",".join(listed + [str(repo)])
+        save_conf()
+    con = db()
+    n = backfill(con, days, only=[repo]) if days else 0
+    print(f"tracking {repo}; backfilled {n} events")
+
+
+def install_hooks(hooks_dir):
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook = hook_script()
+    for name in HOOK_NAMES:
+        f = hooks_dir / name
+        line = f'[ -x "{hook}" ] && "{hook}" {name} "$@"; true  {HOOK_MARK}\n'
+        if f.exists():
+            text = f.read_text()
+            if HOOK_MARK in text:
+                continue
+            f.write_text(text.rstrip("\n") + "\n" + line)  # chain after the existing hook
+        else:
+            f.write_text("#!/bin/sh\n" + line)
+        f.chmod(0o755)
+
+
+def remove_repo(path):
+    top = git(path, "rev-parse", "--show-toplevel").strip() or str(Path(path).resolve())
+    hooks_dir = Path(git(top, "rev-parse", "--git-path", "hooks").strip() or ".git/hooks")
+    if not hooks_dir.is_absolute():
+        hooks_dir = Path(top) / hooks_dir
+    for name in HOOK_NAMES:
+        f = hooks_dir / name
+        if f.exists() and HOOK_MARK in f.read_text():
+            kept = [ln for ln in f.read_text().splitlines(True) if HOOK_MARK not in ln]
+            if "".join(kept).strip() in ("", "#!/bin/sh"):
+                f.unlink()
+            else:
+                f.write_text("".join(kept))
+    C["repos"] = ",".join(str(p) for p in repos() if str(p) != top)
+    save_conf()
+    print(f"stopped tracking {top}")
+
+
+def demo():
+    """Fill a throwaway database with fictional data for screenshots."""
+    rnd = random.Random(7)
+    con = db()
+    if con.execute("SELECT COUNT(*) FROM events").fetchone()[0]:
+        raise SystemExit(f"git-timelog: {DB_PATH} is not empty; run demo with GIT_TIMELOG_HOME=/tmp/gtl-demo")
+    branches = {
+        "web-app": ["feat/checkout-redesign", "fix/cart-badge-count", "feat/dark-mode", "chore/upgrade-react-19"],
+        "api": ["feat/rate-limiter", "fix/token-refresh-race"],
+        "mobile": ["feat/offline-sync", "fix/android-back-button"],
+    }
+    msgs = ["add {} component", "wire {} to API", "fix {} edge case", "refactor {} state", "test {} flow",
+            "polish {} styles", "handle {} errors", "docs for {}"]
+    today = dt.date.today()
+    for back in range(13, -1, -1):
+        d = today - dt.timedelta(days=back)
+        if d.weekday() >= 5:
+            continue
+        t = dt.datetime.combine(d, dt.time(9, 30)).timestamp() + rnd.randint(0, 1800)
+        prev = {}  # repo -> branch checked out there
+        for _ in range(rnd.randint(2, 3)):
+            repo = rnd.choice(list(branches))
+            br = rnd.choice(branches[repo][: 2 + (13 - back) // 5])
+            add_event(con, int(t), "checkout", repo, br, "", "from:" + prev.get(repo, "main"))
+            for _ in range(rnd.randint(2, 4)):
+                t += rnd.randint(20, 70) * 60
+                if t > dt.datetime.combine(d, dt.time(18, 30)).timestamp() or t > now():
+                    break
+                word = br.split("/")[-1].replace("-", " ")
+                add_event(con, int(t), "commit", repo, br, f"{rnd.getrandbits(28):07x}", rnd.choice(msgs).format(word))
+            prev[repo] = br
+            t += rnd.randint(10, 40) * 60
+    statuses = {"feat/checkout-redesign": "review", "fix/cart-badge-count": "done", "feat/rate-limiter": "done",
+                "fix/token-refresh-race": "review", "feat/offline-sync": "doing", "feat/dark-mode": "doing"}
+    for br, st in statuses.items():
+        con.execute("UPDATE tasks SET status=? WHERE branch=?", (st, br))
+    con.execute("UPDATE tasks SET ticket='WEB-142' WHERE branch='feat/checkout-redesign'")
+    for title, mins in (("Sprint planning", 60), ("Design review with PM", 45)):
+        log_time(con, create_task(con, title, None, "done"), mins, "")
+    create_task(con, "Write ADR for caching layer", "api", "todo")
+    con.commit()
+    print(f"demo data written to {DB_PATH}")
+
+
+# ---------------------------------------------------------------- cli
+
+def main():
+    ap = argparse.ArgumentParser(prog="git timelog", description="Your git history is already a timesheet.")
+    ap.add_argument("--version", action="version", version=__version__)
+    sub = ap.add_subparsers(dest="cmd", metavar="command")
+    p = sub.add_parser("init", help="track this repo: install hooks + backfill history")
+    p.add_argument("path", nargs="?", default=".")
+    p.add_argument("--days", type=int, default=30, help="days of history to import (default 30, 0 = none)")
+    p = sub.add_parser("remove", help="stop tracking a repo and remove its hooks")
+    p.add_argument("path", nargs="?", default=".")
+    sub.add_parser("repos", help="list tracked repos")
+    p = sub.add_parser("ls", help="list tasks with hours")
+    p.add_argument("--all", action="store_true", help="include done tasks")
+    p = sub.add_parser("add", help="add a task that is not a branch (meeting, review…)")
+    p.add_argument("title"); p.add_argument("--repo")
+    p = sub.add_parser("status", help="set task status")
+    p.add_argument("task"); p.add_argument("status", choices=STATUSES)
+    p = sub.add_parser("set", help="set task field")
+    p.add_argument("task"); p.add_argument("field", choices=("title", "ticket", "pr_url", "note")); p.add_argument("value")
+    p = sub.add_parser("start", help="start a timer (default: current branch)")
+    p.add_argument("task", nargs="?")
+    sub.add_parser("stop", help="stop the running timer")
+    p = sub.add_parser("log", help="log time manually: git timelog log [task] 1h30m 'note'")
+    p.add_argument("args", nargs="+")
+    p = sub.add_parser("report", help="write the standup note for a day")
+    p.add_argument("date", nargs="?", help="YYYY-MM-DD (default today)")
+    p = sub.add_parser("serve", help="run the dashboard in the foreground")
+    p.add_argument("--port", type=int)
+    sub.add_parser("open", help="open the dashboard in a browser")
+    p = sub.add_parser("ingest", help="import queued hook events (automatic on every read)")
+    p.add_argument("--backfill", type=int, metavar="DAYS")
+    sub.add_parser("demo", help="fill an empty database with fictional data")
+    a = ap.parse_args()
+
+    if a.cmd is None:
+        ap.print_help()
+        return
+    if a.cmd == "init":
+        return init_repo(a.path, a.days)
+    if a.cmd == "remove":
+        return remove_repo(a.path)
+    if a.cmd == "repos":
+        print("\n".join(str(r) for r in repos()) or "no repos tracked; run `git timelog init` inside one")
+        return
+    if a.cmd == "serve":
+        return serve(a.port)
+    if a.cmd == "open":
+        url = f"http://localhost:{C['port']}"
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        subprocess.Popen([opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(url)
+        return
+    if a.cmd == "demo":
+        return demo()
+    con = db()
+    if a.cmd == "ingest":
+        if a.backfill:
+            print(f"backfilled {backfill(con, a.backfill)} events")
+        print(f"ingested {ingest(con)} events")
+    elif a.cmd == "ls":
+        for t in summary(con)["tasks"]:
+            if a.all or t["status"] != "done":
+                print(f"#{t['id']:<4} {t['status']:<7} {t['hours']:>6.1f}h  {t['title']}"
+                      + (f"  [{t['repo']}]" if t["repo"] else ""))
+    elif a.cmd == "add":
+        print(f"task #{create_task(con, a.title, a.repo)}")
+    elif a.cmd in ("status", "set"):
+        t = find_task(con, a.task)
+        field, value = ("status", a.status) if a.cmd == "status" else (a.field, a.value)
+        update_task(con, t["id"], {field: value})
+        print(f"#{t['id']} {field} = {value}")
+    elif a.cmd == "start":
+        t = find_task(con, a.task) if a.task else current_task(con)
+        if not t:
+            raise SystemExit("git-timelog: not on a feature branch; name a task")
+        timer_start(con, t["id"])
+        print(f"timer started: {t['title']}")
+    elif a.cmd == "stop":
+        timer_stop(con)
+        print("timer stopped")
+    elif a.cmd == "log":
+        args = a.args
+        task = None
+        if not re.fullmatch(r"[\d.]+[hm].*", args[0]):
+            task, args = args[0], args[1:]
+        if not args:
+            raise SystemExit("git-timelog: missing duration (e.g. 45m, 1h30m)")
+        t = find_task(con, task) if task else current_task(con)
+        if not t:
+            raise SystemExit("git-timelog: not on a feature branch; name a task")
+        log_time(con, t["id"], parse_duration(args[0]), " ".join(args[1:]))
+        print(f"logged {args[0]} on {t['title']}")
+    elif a.cmd == "report":
+        print(report(con, dt.date.fromisoformat(a.date) if a.date else None))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

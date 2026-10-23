@@ -1,0 +1,9 @@
+[Unit]
+Description=git timelog standup note, weekdays 18:30
+
+[Timer]
+OnCalendar=Mon..Fri 18:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

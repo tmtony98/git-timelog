@@ -1,0 +1,8 @@
+[Unit]
+Description=git timelog dashboard socket (localhost:@PORT@)
+
+[Socket]
+ListenStream=127.0.0.1:@PORT@
+
+[Install]
+WantedBy=sockets.target

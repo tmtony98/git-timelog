@@ -1,0 +1,6 @@
+[Unit]
+Description=git timelog daily standup note
+
+[Service]
+Type=oneshot
+ExecStart=@BIN@ report

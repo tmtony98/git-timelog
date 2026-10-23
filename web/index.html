@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git timelog</title>
+<style>
+:root {
+  --bg: #f6f5f1; --panel: #ffffff; --ink: #1c1d1f; --muted: #6b6e75; --line: #e4e2dc;
+  --accent: #2d6a4f; --accent-ink: #ffffff; --warn: #b45309; --chip: #efede7;
+  --c0: #2d6a4f; --c1: #3a86ff; --c2: #e76f51; --c3: #8e7dbe; --c4: #e9b949; --c5: #4ca5a8; --c6: #c44569; --c7: #7a7d84;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131416; --panel: #1c1d20; --ink: #ecebe7; --muted: #9a9ca3; --line: #2c2e33;
+    --accent: #52b788; --accent-ink: #0d1f16; --warn: #f59e0b; --chip: #26282c;
+    --c0: #52b788; --c1: #6aa5ff; --c2: #f08a6e; --c3: #a99ad6; --c4: #f0c95c; --c5: #6cc3c6; --c6: #e06b8b; --c7: #9a9ca3;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
+h1 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+.spacer { flex: 1; }
+button, input, select { font: inherit; color: inherit; }
+button { background: var(--chip); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+input, select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+.timer { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 999px; padding: 4px 6px 4px 14px; }
+.timer .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.timer.on .dot { background: var(--warn); animation: pulse 1.6s infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.timer .clock { font-variant-numeric: tabular-nums; font-weight: 600; }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.kpi, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.kpi { padding: 14px 16px; }
+.kpi .v { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.kpi .l { color: var(--muted); font-size: 12px; }
+.panel { padding: 16px; margin-bottom: 20px; }
+.board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.col { background: var(--bg); border-radius: 10px; padding: 10px; min-height: 120px; border: 1px dashed transparent; }
+.col.over { border-color: var(--accent); }
+.col h3 { margin: 0 0 8px; font-size: 13px; display: flex; justify-content: space-between; color: var(--muted); font-weight: 600; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 8px; cursor: grab; }
+.card:active { cursor: grabbing; }
+.card .t { font-weight: 600; word-break: break-word; }
+.card .s { color: var(--muted); font-size: 12px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .meta { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--chip); color: var(--muted); }
+.card .meta .h { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+.card .acts { display: none; gap: 6px; margin-top: 8px; }
+.card:hover .acts, .card:focus-within .acts { display: flex; }
+.card .acts button { padding: 2px 8px; font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; }
+.grid2 .panel { margin-bottom: 0; }
+svg text { fill: var(--muted); font-size: 11px; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.feed { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow: auto; }
+.feed li { display: grid; grid-template-columns: 74px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.feed time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.feed .k { font-size: 11px; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.n { text-align: right; font-variant-numeric: tabular-nums; }
+a { color: var(--accent); }
+.tablewrap { overflow-x: auto; }
+.addrow { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.addrow input { flex: 1; min-width: 180px; }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+  padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.toast.show { opacity: 1; }
+@media (max-width: 900px) {
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .board { grid-template-columns: repeat(2, 1fr); }
+  .grid2 { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) { .board { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>git timelog <small>your git history is already a timesheet</small></h1>
+    <div class="spacer"></div>
+    <div class="timer" id="timer"><span class="dot"></span><span id="timerLabel">No timer</span>
+      <span class="clock" id="timerClock"></span><button id="timerStop" hidden>Stop</button></div>
+    <button id="reportBtn">Write standup</button>
+  </header>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="panel">
+    <h2>Tasks</h2>
+    <form class="addrow" id="addForm">
+      <input id="addTitle" placeholder="New task (non-git work: meeting, design review…)" required>
+      <select id="addRepo"><option value="">no repo</option></select>
+      <button class="primary">Add</button>
+    </form>
+    <div class="board" id="board"></div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel">
+      <h2>Hours · last 14 days</h2>
+      <div id="chart"></div>
+      <div class="legend" id="legend"></div>
+    </section>
+    <section class="panel">
+      <h2>Activity</h2>
+      <ul class="feed" id="feed"></ul>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:20px">
+    <h2>All tasks</h2>
+    <div class="tablewrap"><table id="table"></table></div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const STATUSES = ["todo", "doing", "review", "done"];
+const COLORS = Array.from({length: 8}, (_, i) => `var(--c${i})`);
+let data = null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ago = (ts) => {
+  const s = Date.now() / 1000 - ts;
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+};
+const fmtH = (h) => h >= 10 ? h.toFixed(0) + "h" : h.toFixed(1) + "h";
+
+async function api(path, method = "GET", body) {
+  const r = await fetch(path, {method, headers: {"Content-Type": "application/json"},
+    body: body ? JSON.stringify(body) : undefined});
+  if (!r.ok) throw new Error((await r.json()).error || r.status);
+  return r.json();
+}
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2200); }
+
+async function load() {
+  data = await api("/api/summary");
+  const sel = $("addRepo"), keep = sel.value;
+  sel.innerHTML = '<option value="">no repo</option>' + data.repos.map(r => `<option>${esc(r)}</option>`).join("");
+  sel.value = keep;
+  render();
+}
+
+function render() {
+  const k = data.kpi;
+  $("kpis").innerHTML = [
+    [fmtH(k.today), "Hours today"], [fmtH(k.week), "Hours this week"],
+    [k.active, "Active tasks"], [k.commits_week, "Commits this week"],
+  ].map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+
+  // colour the tasks that appear in the chart window, biggest first
+  const chartHours = {};
+  data.days.forEach(d => Object.entries(d.tasks).forEach(([id, h]) => chartHours[id] = (chartHours[id] || 0) + h));
+  const colorOf = {};
+  Object.entries(chartHours).sort((a, b) => b[1] - a[1]).forEach(([id], i) => colorOf[id] = COLORS[Math.min(i, 7)]);
+
+  $("board").innerHTML = STATUSES.map(s => {
+    const items = data.tasks.filter(t => t.status === s);
+    const shown = s === "done" ? items.slice(0, 8) : items;
+    return `<div class="col" data-status="${s}"><h3><span>${s}</span><span>${items.length}</span></h3>
+      ${shown.map(card).join("")}</div>`;
+  }).join("");
+
+  // stacked bars
+  const days = data.days, W = 560, H = 180, pad = 22, bw = (W - pad) / days.length;
+  const max = Math.max(1, ...days.map(d => Object.values(d.tasks).reduce((a, b) => a + b, 0)));
+  const used = new Set();
+  let bars = "";
+  days.forEach((d, i) => {
+    let y = H - pad;
+    Object.entries(d.tasks).sort((a, b) => b[1] - a[1]).forEach(([tid, h]) => {
+      const bh = (h / max) * (H - pad - 8);
+      y -= bh; used.add(+tid);
+      const t = data.tasks.find(x => x.id == tid);
+      bars += `<rect x="${pad + i * bw + 3}" y="${y}" width="${bw - 6}" height="${bh}" rx="2" fill="${colorOf[tid] || COLORS[7]}"><title>${esc(t?.title)}: ${h.toFixed(1)}h</title></rect>`;
+    });
+    const dt = new Date(d.date + "T00:00");
+    bars += `<text x="${pad + i * bw + bw / 2}" y="${H - 6}" text-anchor="middle">${dt.getDate()}</text>`;
+  });
+  const grid = [0, .5, 1].map(f => {
+    const y = H - pad - f * (H - pad - 8);
+    return `<line x1="${pad}" x2="${W}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="0" y="${y + 4}">${(max * f).toFixed(0)}</text>`;
+  }).join("");
+  $("chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Hours per day">${grid}${bars}</svg>`;
+  $("legend").innerHTML = data.tasks.filter(t => used.has(t.id)).sort((a, b) => chartHours[b.id] - chartHours[a.id]).slice(0, 8)
+    .map(t => `<span><i style="background:${colorOf[t.id]}"></i>${esc(t.title)}</span>`).join("");
+
+  $("feed").innerHTML = data.activity.map(e => `<li><time>${ago(e.ts)}</time><div>
+    <div>${e.kind === "checkout" ? "switched to <b>" + esc(e.branch) + "</b>" : esc(e.subject)}</div>
+    <div class="k">${esc(e.kind)} · ${esc(e.repo)}${e.kind !== "checkout" ? " · " + esc(e.branch) : ""}</div></div></li>`).join("")
+    || "<li>No activity yet. Run <code>git timelog init</code> in a repo, then commit.</li>";
+
+  $("table").innerHTML = `<tr><th>Task</th><th>Repo</th><th>Status</th><th class="n">Hours</th><th class="n">Commits</th><th>Last</th><th>Links</th></tr>` +
+    data.tasks.map(t => `<tr><td>${esc(t.title)}</td><td>${esc(t.repo || "—")}</td><td>${t.status}</td>
+      <td class="n">${t.hours.toFixed(1)}</td><td class="n">${t.commits}</td><td>${ago(t.last)}</td>
+      <td>${t.ticket ? `<span class="badge">${esc(t.ticket)}</span> ` : ""}${t.pr_url ? `<a href="${esc(t.pr_url)}" target="_blank" rel="noopener">PR</a>` : ""}</td></tr>`).join("");
+
+  renderTimer();
+  bindDnD();
+}
+
+function card(t) {
+  return `<div class="card" draggable="true" data-id="${t.id}">
+    <div class="t">${esc(t.title)}</div>
+    ${t.last_subject ? `<div class="s" title="${esc(t.last_subject)}">${esc(t.last_subject)}</div>` : ""}
+    <div class="meta">${t.repo ? `<span class="badge">${esc(t.repo)}</span>` : ""}
+      ${t.ticket ? `<span class="badge">${esc(t.ticket)}</span>` : ""}
+      <span class="badge">${ago(t.last)}</span><span class="h">${fmtH(t.hours)}</span></div>
+    <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="edit">Edit</button></div>
+  </div>`;
+}
+
+function bindDnD() {
+  document.querySelectorAll(".card").forEach(c => {
+    c.ondragstart = (e) => e.dataTransfer.setData("text/plain", c.dataset.id);
+    c.onclick = (e) => { const a = e.target.dataset.act; if (a) cardAction(a, +c.dataset.id); };
+  });
+  document.querySelectorAll(".col").forEach(col => {
+    col.ondragover = (e) => { e.preventDefault(); col.classList.add("over"); };
+    col.ondragleave = () => col.classList.remove("over");
+    col.ondrop = async (e) => {
+      e.preventDefault(); col.classList.remove("over");
+      await api(`/api/task/${e.dataTransfer.getData("text/plain")}`, "PATCH", {status: col.dataset.status});
+      load();
+    };
+  });
+}
+
+async function cardAction(act, id) {
+  const t = data.tasks.find(x => x.id === id);
+  if (act === "start") { await api("/api/timer", "POST", {action: "start", task_id: id}); toast("Timer: " + t.title); }
+  if (act === "log") {
+    const v = window.prompt(`Minutes to log on "${t.title}"`, "30");
+    if (!v || !(+v > 0)) return;
+    const note = window.prompt("Note (optional)", "") || "";
+    await api("/api/log", "POST", {task_id: id, minutes: +v, note}); toast(`Logged ${v}m`);
+  }
+  if (act === "edit") {
+    const title = window.prompt("Title", t.title); if (title === null) return;
+    const ticket = window.prompt("Ticket (e.g. WEB-142)", t.ticket || ""); if (ticket === null) return;
+    const pr_url = window.prompt("PR URL", t.pr_url || ""); if (pr_url === null) return;
+    await api(`/api/task/${id}`, "PATCH", {title, ticket, pr_url});
+  }
+  load();
+}
+
+let tick;
+function renderTimer() {
+  const tm = data.timer, el = $("timer");
+  el.classList.toggle("on", !!tm);
+  $("timerStop").hidden = !tm;
+  $("timerLabel").textContent = tm ? tm.title : "No timer";
+  clearInterval(tick);
+  const upd = () => {
+    if (!tm) return $("timerClock").textContent = "";
+    const s = Math.floor(Date.now() / 1000 - tm.start);
+    $("timerClock").textContent = `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  };
+  upd(); if (tm) tick = setInterval(upd, 1000);
+}
+
+$("timerStop").onclick = async () => { await api("/api/timer", "POST", {action: "stop"}); load(); };
+$("reportBtn").onclick = async () => { const r = await api("/api/report", "POST"); toast("Saved " + r.path.split("/").pop()); };
+$("addForm").onsubmit = async (e) => {
+  e.preventDefault();
+  await api("/api/task", "POST", {title: $("addTitle").value, repo: $("addRepo").value || null});
+  $("addTitle").value = ""; load();
+};
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+load().catch(e => toast("Load failed: " + e.message));
+</script>
+</body>
+</html>
