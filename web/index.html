@@ -79,6 +79,10 @@ a { color: var(--accent); }
 .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg);
   padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .toast.show { opacity: 1; }
+.toast.act { pointer-events: auto; display: flex; gap: 12px; align-items: center; }
+.toast button { background: none; border: 0; color: var(--accent); font-weight: 600; padding: 0; }
+.card .acts .del { margin-left: auto; }
+.card .acts .del:hover, .card .acts .del.armed { color: #fff; background: #c0392b; border-color: #c0392b; }
 @media (max-width: 900px) {
   .kpis { grid-template-columns: repeat(2, 1fr); }
   .board { grid-template-columns: repeat(2, 1fr); }
@@ -164,7 +168,21 @@ async function api(path, method = "GET", body) {
   if (!r.ok) throw new Error((await r.json()).error || r.status);
   return r.json();
 }
-function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2200); }
+let toastTimer;
+function toast(msg, actionLabel, action) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.toggle("act", !!action);
+  if (action) {
+    const b = document.createElement("button");
+    b.textContent = actionLabel;
+    b.onclick = () => { t.classList.remove("show", "act"); action(); };
+    t.appendChild(b);
+  }
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show", "act"), action ? 6000 : 2200);
+}
 
 async function load() { data = await api("/api/summary"); pickProject(); render(); }
 
@@ -278,14 +296,14 @@ function card(t) {
       ${t.ticket ? `<span class="badge">${esc(t.ticket)}</span>` : ""}
       ${t.status === "hold" ? `<span class="badge hold" title="${t.held_auto ? "Put on hold automatically: not merged and untouched" : "You put this on hold"}">${t.held_auto && t.last_seen ? "idle " + Math.floor((Date.now() / 1000 - t.last_seen) / 86400) + "d" : "on hold"}</span>` : ""}
       <span class="badge">${ago(t.last)}</span><span class="h">${fmtH(t.hours)}</span></div>
-    <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="edit">Edit</button></div>
+    <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="edit">Edit</button><button data-act="delete" class="del" title="Delete task">Delete</button></div>
   </div>`;
 }
 
 function bindDnD() {
   document.querySelectorAll(".card").forEach(c => {
     c.ondragstart = (e) => e.dataTransfer.setData("text/plain", c.dataset.id);
-    c.onclick = (e) => { const a = e.target.dataset.act; if (a) cardAction(a, +c.dataset.id); };
+    c.onclick = (e) => { const a = e.target.dataset.act; if (a) cardAction(a, +c.dataset.id, e.target); };
   });
   document.querySelectorAll(".col").forEach(col => {
     col.ondragover = (e) => { e.preventDefault(); col.classList.add("over"); };
@@ -298,8 +316,20 @@ function bindDnD() {
   });
 }
 
-async function cardAction(act, id) {
+async function cardAction(act, id, btn) {
   const t = data.tasks.find(x => x.id === id);
+  if (act === "delete") {
+    // two clicks: the first arms the button, the second (within 3 s) deletes
+    if (!btn.classList.contains("armed")) {
+      btn.classList.add("armed"); btn.textContent = "Sure?";
+      setTimeout(() => { btn.classList.remove("armed"); btn.textContent = "Delete"; }, 3000);
+      return;
+    }
+    await api(`/api/task/${id}`, "DELETE");
+    toast(`Deleted "${t.title}"`, "Undo", async () => {
+      await api(`/api/task/${id}`, "PATCH", {deleted: false}); toast("Restored"); load();
+    });
+  }
   if (act === "start") { await api("/api/timer", "POST", {action: "start", task_id: id}); toast("Timer: " + t.title); }
   if (act === "log") {
     const v = window.prompt(`Minutes to log on "${t.title}"`, "30");

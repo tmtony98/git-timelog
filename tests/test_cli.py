@@ -190,6 +190,28 @@ class CliTest(unittest.TestCase):
         t = next(t for t in self.summary()["tasks"] if t["branch"] == "feat/paused")
         self.assertEqual((t["status"], t["held_auto"]), ("doing", 0))
 
+    def test_delete_hides_task_and_time_and_restore_brings_it_back(self):
+        self.tl("init", "--days", "0")
+        self.tl("add", "Throwaway")
+        self.tl("log", "Throwaway", "1h")
+        self.tl("delete", "Throwaway")
+        s = self.summary()
+        self.assertNotIn("Throwaway", [t["title"] for t in s["tasks"]])
+        self.assertEqual(s["kpi"]["today"], 0.0)
+        self.tl("restore", "Throwaway")
+        self.assertIn("Throwaway", [t["title"] for t in self.summary()["tasks"]])
+
+    def test_deleted_branch_task_is_not_recreated_until_you_commit(self):
+        self.tl("init", "--days", "0")
+        self.git("checkout", "-q", "-b", "feat/lookup")
+        self.summary()
+        self.tl("delete", "feat/lookup")
+        self.git("checkout", "-q", "main")
+        self.git("checkout", "-q", "feat/lookup")  # just looking again
+        self.assertNotIn("feat/lookup", [t["branch"] for t in self.summary()["tasks"]])
+        self.commit("real work")  # working on it again
+        self.assertIn("feat/lookup", [t["branch"] for t in self.summary()["tasks"]])
+
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")
         self.tl("add", "Sprint planning")

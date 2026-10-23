@@ -58,13 +58,18 @@ git timelog log "Sprint planning" 1h   # add time to a named task
 git timelog add "Design review"        # a task that isn't a branch
 git timelog start / stop               # manual timer (current branch by default)
 git timelog status feat/login hold     # todo | doing | hold | done
+git timelog delete feat/lookup         # hide a task and its time (git timelog restore undoes it)
 git timelog set feat/login ticket WEB-142
 git timelog report                     # write today's standup note
 git timelog repos | remove             # list or stop tracking repos
 ```
 
-On the dashboard you can drag cards between columns, start timers, log time and attach a
-ticket or PR link.
+On the dashboard you can drag cards between columns, start timers, log time, attach a
+ticket or PR link, and delete a task (click Delete twice; Undo appears for a few seconds).
+
+Deleting hides the task and its hours from the board, totals and standup notes but keeps the
+record, so switching to that branch again doesn't bring it back. Committing on it does, since
+you're working on it again. `git timelog restore <task>` undoes a delete at any time.
 
 ## Projects and tabs
 
