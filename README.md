@@ -130,6 +130,11 @@ python3 -m unittest discover tests
 
 The tests run the real CLI against throwaway git repositories.
 
+## Contributing
+
+Contributions are welcome! Bug reports, ideas and pull requests all help.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, project principles and ideas to pick up.
+
 ## License
 
 MIT
