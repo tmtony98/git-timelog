@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -76,6 +77,17 @@ class CliTest(unittest.TestCase):
         self.git("merge", "-q", "--no-ff", "fix/typo", "-m", "Merge branch 'fix/typo' into main")
         tasks = {t["branch"]: t for t in self.summary()["tasks"]}
         self.assertEqual(tasks["fix/typo"]["status"], "done")
+
+    def test_returning_to_done_branch_reopens_it(self):
+        self.tl("init", "--days", "0")
+        self.git("checkout", "-q", "-b", "fix/typo")
+        self.commit("fix typo")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "fix/typo", "-m", "Merge branch 'fix/typo' into main")
+        time.sleep(1.1)  # events are second-resolution; reopen only when newer than the merge
+        self.git("checkout", "-q", "fix/typo")
+        tasks = {t["branch"]: t for t in self.summary()["tasks"]}
+        self.assertEqual(tasks["fix/typo"]["status"], "doing")
 
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")

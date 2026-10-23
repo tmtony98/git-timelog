@@ -133,6 +133,10 @@ def add_event(con, ts, kind, repo, branch, sha, subject):
     ensure_task(con, repo, branch, ts)
     if kind == "checkout" and subject.startswith("from:"):
         ensure_task(con, repo, subject[5:], ts)
+    if kind in ("checkout", "commit"):
+        # Back on a finished branch => working on it again (only if newer than its merge).
+        con.execute("UPDATE tasks SET status='doing', updated=? WHERE repo=? AND branch=? "
+                    "AND status='done' AND updated < ?", (ts, repo, branch, ts))
     if kind in ("commit", "merge"):
         for pat in MERGE_PATTERNS:
             m = pat.match(subject)
