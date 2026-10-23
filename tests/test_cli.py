@@ -125,6 +125,37 @@ class CliTest(unittest.TestCase):
         self.assertEqual(shop["kpi"]["commits_week"], 1)
         self.assertEqual(next(t for t in s["tasks"] if t["branch"] == "feat/cart")["project"], "Shop")
 
+    def old_events(self, branch, days_ago):
+        """Pretend you last worked on `branch` some days ago (append to the hook log)."""
+        ts = int(time.time()) - days_ago * 86400
+        log = Path(self.env["GIT_TIMELOG_HOME"]) / "events.log"
+        with open(log, "a") as f:
+            f.write(f"{ts}\tcommit\tshop-web\t{branch}\tabc1234\twip\n")
+            f.write(f"{ts + 60}\tcheckout\tshop-web\tmain\tabc1234\tfrom:{branch}\n")
+
+    def test_idle_unmerged_branch_goes_on_hold_and_resumes(self):
+        self.tl("init", "--days", "0")
+        self.old_events("feat/paused", 5)
+        t = next(t for t in self.summary()["tasks"] if t["branch"] == "feat/paused")
+        self.assertEqual((t["status"], t["held_auto"]), ("hold", 1))
+        self.git("checkout", "-q", "-b", "feat/paused")  # back on it
+        t = next(t for t in self.summary()["tasks"] if t["branch"] == "feat/paused")
+        self.assertEqual(t["status"], "doing")
+
+    def test_recent_branch_is_not_held(self):
+        self.tl("init", "--days", "0")
+        self.old_events("feat/active", 1)
+        t = next(t for t in self.summary()["tasks"] if t["branch"] == "feat/active")
+        self.assertEqual(t["status"], "doing")
+
+    def test_moving_back_to_doing_resets_the_idle_clock(self):
+        self.tl("init", "--days", "0")
+        self.old_events("feat/paused", 5)
+        self.summary()
+        self.tl("status", "feat/paused", "doing")
+        t = next(t for t in self.summary()["tasks"] if t["branch"] == "feat/paused")
+        self.assertEqual((t["status"], t["held_auto"]), ("doing", 0))
+
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")
         self.tl("add", "Sprint planning")

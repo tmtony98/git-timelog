@@ -53,6 +53,8 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 .card .s { color: var(--muted); font-size: 12px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .meta { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--chip); color: var(--muted); }
+.badge.hold { color: var(--warn); }
+.col[data-status="hold"] .card { opacity: .78; }
 .card .meta .h { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
 .card .acts { display: none; gap: 6px; margin-top: 8px; }
 .card:hover .acts, .card:focus-within .acts { display: flex; }
@@ -139,7 +141,8 @@ a { color: var(--accent); }
 <div class="toast" id="toast"></div>
 
 <script>
-const STATUSES = ["todo", "doing", "review", "done"];
+const STATUSES = ["todo", "doing", "hold", "done"];
+const LABELS = {todo: "todo", doing: "doing", hold: "on hold", done: "done"};
 const COLORS = Array.from({length: 8}, (_, i) => `var(--c${i})`);
 let data = null;   // full summary from the server
 let view = null;   // the selected project's slice of it
@@ -225,7 +228,7 @@ function render() {
   $("board").innerHTML = STATUSES.map(s => {
     const items = data.tasks.filter(t => t.status === s);
     const shown = s === "done" ? items.slice(0, 8) : items;
-    return `<div class="col" data-status="${s}"><h3><span>${s}</span><span>${items.length}</span></h3>
+    return `<div class="col" data-status="${s}"><h3><span>${LABELS[s]}</span><span>${items.length}</span></h3>
       ${shown.map(card).join("")}</div>`;
   }).join("");
 
@@ -273,6 +276,7 @@ function card(t) {
     ${t.last_subject ? `<div class="s" title="${esc(t.last_subject)}">${esc(t.last_subject)}</div>` : ""}
     <div class="meta">${t.repo ? `<span class="badge">${esc(t.repo)}</span>` : ""}
       ${t.ticket ? `<span class="badge">${esc(t.ticket)}</span>` : ""}
+      ${t.status === "hold" ? `<span class="badge hold" title="${t.held_auto ? "Put on hold automatically: not merged and untouched" : "You put this on hold"}">${t.held_auto && t.last_seen ? "idle " + Math.floor((Date.now() / 1000 - t.last_seen) / 86400) + "d" : "on hold"}</span>` : ""}
       <span class="badge">${ago(t.last)}</span><span class="h">${fmtH(t.hours)}</span></div>
     <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="edit">Edit</button></div>
   </div>`;

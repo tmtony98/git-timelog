@@ -57,7 +57,7 @@ git timelog log 45m "code review"      # add time to the current branch
 git timelog log "Sprint planning" 1h   # add time to a named task
 git timelog add "Design review"        # a task that isn't a branch
 git timelog start / stop               # manual timer (current branch by default)
-git timelog status feat/login review   # todo | doing | review | done
+git timelog status feat/login hold     # todo | doing | hold | done
 git timelog set feat/login ticket WEB-142
 git timelog report                     # write today's standup note
 git timelog repos | remove             # list or stop tracking repos
@@ -95,9 +95,15 @@ everything together.
 | First checkout or commit on a new branch | **doing** |
 | A merge commit names the branch (`Merge pull request #12 from you/feat-x`, `Merged in feat-x (pull request #12)`, `Merge branch 'feat-x'`) | **done** |
 | The branch is already contained in a base branch such as `main` (fast-forward merge, no merge commit) and you committed on it | **done** |
+| Not merged, and you haven't been on the branch for `idle_hold_days` (3) | **on hold** (card shows "idle 5d") |
 | No activity for `stale_days` (7) when importing history | **done** |
-| You switch back to, or commit on, a done branch | **doing** again |
+| You switch back to, or commit on, a held or done branch | **doing** again |
 | You drag the card or run `git timelog status` | whatever you chose; older merges never override it |
+
+"Been on the branch" means you committed on it, switched to it or switched away from it, so
+branches you only checked out to test or look around also go on hold. Moving a held card back
+to doing yourself gives it another `idle_hold_days` before the rule applies again. Cards you
+put on hold by hand say "on hold" instead of "idle Nd".
 
 A branch you only created (no commits of your own yet) is never treated as merged, even
 though it sits inside `main`. Merge detection runs whenever new events arrive and at most
@@ -133,6 +139,7 @@ author =                       ; default: each repo's user.email
 base_branches = main,master,develop,dev,staging,prod,release/*
 session_gap_min = 120
 lead_in_min = 30
+idle_hold_days = 3             ; unmerged branch untouched this long -> on hold
 stale_days = 7                 ; idle branches are marked done after backfill
 idle_exit_min = 10
 port = 7777                    ; re-run install.sh with PORT=... to change the socket

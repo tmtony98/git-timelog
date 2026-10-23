@@ -22,7 +22,7 @@ from fnmatch import fnmatch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 HOME = Path.home()
 DATA = Path(os.environ.get("GIT_TIMELOG_HOME") or HOME / ".local/share/git-timelog")
@@ -31,7 +31,7 @@ DB_PATH = DATA / "timelog.db"
 LOG_PATH = DATA / "events.log"
 HOOK_MARK = "# git-timelog"
 HOOK_NAMES = ("post-checkout", "post-commit", "post-merge")
-STATUSES = ("todo", "doing", "review", "done")
+STATUSES = ("todo", "doing", "hold", "done")
 
 DEFAULTS = {
     "repos": "",
@@ -40,6 +40,7 @@ DEFAULTS = {
     "session_gap_min": "120",
     "lead_in_min": "30",
     "stale_days": "7",
+    "idle_hold_days": "3",      # unmerged branch untouched this long -> hold
     "idle_exit_min": "10",
     "port": "7777",
     "standup_dir": str(HOME / "Documents/git-timelog/standups"),
@@ -139,6 +140,10 @@ def db():
     if "reopened" not in [r[1] for r in con.execute("PRAGMA table_info(tasks)")]:
         # when you last moved the task off "done"; older merges must not undo that
         con.execute("ALTER TABLE tasks ADD COLUMN reopened INTEGER")
+    if "held_auto" not in [r[1] for r in con.execute("PRAGMA table_info(tasks)")]:
+        # 1 = put on hold by the idle rule, 0 = by you
+        con.execute("ALTER TABLE tasks ADD COLUMN held_auto INTEGER")
+        con.execute("UPDATE tasks SET status='doing' WHERE status='review'")  # review column retired in 0.3
     return con
 
 
@@ -161,10 +166,10 @@ def add_event(con, ts, kind, repo, branch, sha, subject, live=False):
     if kind == "checkout" and subject.startswith("from:"):
         ensure_task(con, repo, subject[5:], ts)
     if live and kind in ("checkout", "commit"):
-        # Back on a finished branch => working on it again. Only for events as they
-        # happen: replayed history must not reopen tasks that shipped long ago.
+        # Back on a finished or held branch => working on it again. Only for events as
+        # they happen: replayed history must not reopen tasks that shipped long ago.
         con.execute("UPDATE tasks SET status='doing', updated=?, reopened=? WHERE repo=? AND branch=? "
-                    "AND status='done' AND updated < ?", (ts, ts, repo, branch, ts))
+                    "AND status IN ('done', 'hold') AND updated < ?", (ts, ts, repo, branch, ts))
     if kind in ("commit", "merge"):
         for pat in MERGE_PATTERNS:
             m = pat.match(subject)
@@ -233,7 +238,24 @@ def mark_merged(con, only=None):
             con.execute("UPDATE tasks SET status='done' WHERE repo=? AND branch=? AND status!='done' "
                         "AND COALESCE(reopened, 0) < ? AND EXISTS (SELECT 1 FROM events e WHERE e.kind='commit' "
                         "AND e.repo=tasks.repo AND e.branch=tasks.branch)", (name, branch, int(tip)))
+    mark_idle(con)
     con.execute("INSERT OR REPLACE INTO meta VALUES('merged_check', ?)", (str(now()),))
+
+
+# Last time you were on a task's branch: committed on it, switched to it or away from it.
+LAST_SEEN = ("SELECT MAX(e.ts) FROM events e WHERE e.repo=tasks.repo AND e.kind NOT IN ('merge', 'merged') "
+             "AND (e.branch=tasks.branch OR e.subject='from:' || tasks.branch)")
+
+
+def mark_idle(con):
+    """Doing tasks whose (unmerged) branch you haven't been on for idle_hold_days go on hold.
+
+    Runs after mark_merged, so merged branches are already done. Waits the same
+    number of days after you move a task back to doing yourself.
+    """
+    cutoff = now() - int(float(C["idle_hold_days"]) * 86400)
+    con.execute(f"UPDATE tasks SET status='hold', held_auto=1 WHERE status='doing' AND branch IS NOT NULL "
+                f"AND COALESCE(reopened, 0) < ? AND COALESCE(({LAST_SEEN}), 0) < ?", (cutoff, cutoff))
 
 
 def backfill(con, days, only=None):
@@ -315,7 +337,7 @@ def summary(con):
         "SELECT t.id, e.subject FROM events e JOIN tasks t ON t.repo=e.repo AND t.branch=e.branch "
         "WHERE e.kind='commit' ORDER BY e.ts")}
     tasks = []
-    for t in con.execute("SELECT * FROM tasks ORDER BY updated DESC"):
+    for t in con.execute(f"SELECT *, ({LAST_SEEN}) AS last_seen FROM tasks ORDER BY updated DESC"):
         c = commits.get(t["id"], {})
         tasks.append({**dict(t), "hours": round(per_task.get(t["id"], 0) / 3600, 2),
                       "commits": c.get("n", 0), "last": max(c.get("last") or 0, t["updated"] or 0),
@@ -343,7 +365,7 @@ def summary(con):
             return round(sum(sec for d, v in per_day.items() if pred(d)
                              for tid, sec in v.items() if mine(tid)) / 3600, 1)
         return {"today": hrs(lambda d: d == today), "week": hrs(lambda d: d >= week_start),
-                "active": sum(1 for t in tasks if mine(t["id"]) and t["status"] in ("doing", "review")),
+                "active": sum(1 for t in tasks if mine(t["id"]) and t["status"] == "doing"),
                 "commits_week": sum(n for p, n in wk_commits.items() if project is None or p == project)}
 
     tracked = {repo_name(r) for r in repos()}
@@ -404,7 +426,9 @@ def update_task(con, tid, fields):
     if "status" in allowed and allowed["status"] not in STATUSES:
         raise ValueError(f"status must be one of {', '.join(STATUSES)}")
     if allowed.get("status") not in (None, "done"):
-        allowed["reopened"] = now()  # your choice wins over older merge commits
+        allowed["reopened"] = now()  # your choice wins over older merges and the idle rule
+    if "status" in allowed:
+        allowed["held_auto"] = 0
     if allowed:
         sets = ", ".join(f"{k}=?" for k in allowed)
         con.execute(f"UPDATE tasks SET {sets}, updated=? WHERE id=?", (*allowed.values(), now(), tid))
@@ -466,7 +490,9 @@ def report(con, day=None):
         if tid in names:
             lines.append(f"| {names[tid]['title']} | {names[tid]['status']} | {sec / 3600:.1f} |")
     lines += ["", "## In progress"]
-    lines += [f"- {t['title']} — {t['status']}" for t in s["tasks"] if t["status"] in ("doing", "review")] or ["- none"]
+    lines += [f"- {t['title']}" for t in s["tasks"] if t["status"] == "doing"] or ["- none"]
+    lines += ["", "## On hold"]
+    lines += [f"- {t['title']}" for t in s["tasks"] if t["status"] == "hold"] or ["- none"]
     lines += ["", "## Blockers", "- ", ""]
     out = Path(os.path.expanduser(C["standup_dir"]))
     out.mkdir(parents=True, exist_ok=True)
@@ -667,8 +693,8 @@ def demo():
                 add_event(con, int(t), "commit", repo, br, f"{rnd.getrandbits(28):07x}", rnd.choice(msgs).format(word))
             prev[repo] = br
             t += rnd.randint(10, 40) * 60
-    statuses = {"feat/checkout-redesign": "review", "fix/cart-badge-count": "done", "feat/rate-limiter": "done",
-                "fix/token-refresh-race": "review", "feat/offline-sync": "doing", "feat/dark-mode": "doing"}
+    statuses = {"feat/checkout-redesign": "doing", "fix/cart-badge-count": "done", "feat/rate-limiter": "done",
+                "fix/token-refresh-race": "hold", "feat/offline-sync": "doing", "feat/dark-mode": "doing"}
     for br, st in statuses.items():
         con.execute("UPDATE tasks SET status=? WHERE branch=?", (st, br))
     con.execute("UPDATE tasks SET ticket='WEB-142' WHERE branch='feat/checkout-redesign'")
