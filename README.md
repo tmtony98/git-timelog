@@ -121,6 +121,41 @@ A branch you only created (no commits of your own yet) is never treated as merge
 though it sits inside `main`. Merge detection runs whenever new events arrive and at most
 every 5 minutes while the dashboard is open.
 
+## Optional: keep Claude Code off `main`
+
+git timelog treats each branch as one task, so work done directly on `main` never gets a card.
+If you use [Claude Code](https://claude.com/claude-code), you can add a hook that refuses
+edits while you're on `main` and asks for a branch first. Put this in your project's
+`.claude/settings.json` (commit it so the whole team gets it):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r \".tool_input.file_path // empty\"); case \"$f\" in \"$CLAUDE_PROJECT_DIR\"/*) ;; *) exit 0 ;; esac; b=$(git -C \"$CLAUDE_PROJECT_DIR\" branch --show-current); if [ \"$b\" = \"main\" ]; then echo \"Blocked: you are on main. Create a branch first: git checkout -b feat/<short-name>\" >&2; exit 2; fi; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+On `main`, Claude's edits are blocked with a message telling it to run
+`git checkout -b feat/<short-name>`; on any other branch nothing changes. Notes:
+
+- Needs [`jq`](https://jqlang.github.io/jq/). Without it the hook silently allows everything.
+- It only guards Claude's Edit and Write tools. Shell commands such as `sed -i`, and your own
+  edits, aren't affected.
+- Using `master` or another default branch? Change `"main"` in the command.
+- Files outside the project folder are never blocked.
+
 ## Worktrees
 
 `git worktree` checkouts count as the same repo: tasks from `~/code/shop` and
