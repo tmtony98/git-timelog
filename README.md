@@ -156,6 +156,28 @@ On `main`, Claude's edits are blocked with a message telling it to run
 - Using `master` or another default branch? Change `"main"` in the command.
 - Files outside the project folder are never blocked.
 
+### Other coding agents
+
+Cursor, Codex, Copilot, Aider, Gemini and friends have no hook like this, but you can ask them
+the same thing. Paste this into the file your agent reads for project rules (`AGENTS.md`,
+`CLAUDE.md`, `.cursor/rules`, `.github/copilot-instructions.md`, ...):
+
+```text
+Branch rule (one task = one branch):
+- At the start of every session or terminal, run `git branch --show-current`.
+- Never edit files on main, master or develop. Create a branch for the task first:
+  `git checkout -b <type>/<short-name>` (for example feat/login-form or fix/cart-count).
+- If you're already on a feature branch, check that it matches the current task.
+  If the task is different, create or switch to the right branch instead of mixing work.
+- Commit and switch branches only after saving or stashing your changes.
+- To run several agents on the same repo at once, give each its own worktree:
+  `git worktree add ../<repo>-<name> -b <type>/<name>`
+```
+
+This is a request, not a lock: an agent can ignore it, and only the Claude Code hook above
+actually blocks edits. A new terminal doesn't always mean a new task, so the rule asks the agent
+to decide from the task at hand.
+
 ## Worktrees
 
 `git worktree` checkouts count as the same repo: tasks from `~/code/shop` and
