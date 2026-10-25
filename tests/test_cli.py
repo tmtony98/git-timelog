@@ -212,6 +212,69 @@ class CliTest(unittest.TestCase):
         self.commit("real work")  # working on it again
         self.assertIn("feat/lookup", [t["branch"] for t in self.summary()["tasks"]])
 
+    def agent(self, offset, branch, sid, what, repo="shop-web"):
+        """Append a coding-agent event `offset` seconds after a fixed start three hours ago."""
+        ts = int(time.time()) - 3 * 3600 + offset
+        log = Path(self.env["GIT_TIMELOG_HOME"]) / "events.log"
+        with open(log, "a") as f:
+            f.write(f"{ts}\tagent\t{repo}\t{branch}\t{sid}\t{what}\n")
+
+    def git_event(self, offset, kind, branch, subject):
+        ts = int(time.time()) - 3 * 3600 + offset
+        with open(Path(self.env["GIT_TIMELOG_HOME"]) / "events.log", "a") as f:
+            f.write(f"{ts}\t{kind}\tshop-web\t{branch}\tabc1234\t{subject}\n")
+
+    def test_research_session_then_branch_is_one_card(self):
+        self.tl("init", "--days", "0")
+        self.agent(0, "main", "s-A", "prompt|fix the cart badge count")
+        self.agent(900, "main", "s-A", "stop")             # agent worked 15 min
+        self.agent(1200, "main", "s-A", "prompt")          # you read for 5 min
+        self.git_event(1260, "checkout", "fix/cart", "from:main")
+        self.agent(2400, "fix/cart", "s-A", "stop")        # agent worked 20 min
+        self.git_event(2460, "commit", "fix/cart", "fix cart badge")
+        tasks = self.summary()["tasks"]
+        self.assertEqual([t["branch"] for t in tasks], ["fix/cart"])  # session card folded in
+        self.assertAlmostEqual(tasks[0]["hours"], 2460 / 3600, places=2)  # overlap not double-counted
+
+    def test_research_only_session_gets_its_own_card(self):
+        self.tl("init", "--days", "0")
+        self.agent(0, "main", "s-B", "prompt|how does auth work")
+        self.agent(2400, "main", "s-B", "stop")            # long agent run: counts
+        self.agent(4800, "main", "s-B", "prompt")          # 40 min away: doesn't
+        self.agent(5100, "main", "s-B", "stop")            # 5 min
+        t = next(t for t in self.summary()["tasks"] if t["session"] == "s-B")
+        self.assertEqual((t["title"], t["status"]), ("how does auth work", "doing"))
+        self.assertAlmostEqual(t["hours"], 2700 / 3600, places=2)
+        self.agent(5200, "main", "s-B", "end")
+        t = next(t for t in self.summary()["tasks"] if t["session"] == "s-B")
+        self.assertEqual(t["status"], "done")
+
+    def test_empty_and_untracked_sessions_make_no_card(self):
+        self.tl("init", "--days", "0")
+        self.agent(0, "main", "s-C", "start")
+        self.agent(60, "main", "s-C", "end")
+        self.agent(0, "", "s-D", "prompt|elsewhere", repo="not-tracked")
+        self.assertEqual(self.summary()["tasks"], [])
+
+    def test_agent_hook_understands_each_agent(self):
+        self.tl("init", "--days", "0")
+        hook = ROOT / "hooks" / "agent-hook.sh"
+        repo = str(self.repo)
+        payloads = {
+            "claude": {"hook_event_name": "UserPromptSubmit", "session_id": "c1", "cwd": repo, "prompt": "claude"},
+            "codex": {"hook_event_name": "UserPromptSubmit", "session_id": "x1", "cwd": repo, "prompt": "codex",
+                      "turn_id": "t1", "model": "m"},
+            "gemini": {"hook_event_name": "BeforeAgent", "session_id": "g1", "cwd": repo, "prompt": "gemini"},
+            "cursor": {"hook_event_name": "beforeSubmitPrompt", "conversation_id": "k1",
+                       "workspace_roots": [repo], "prompt": "cursor"},
+        }
+        for name, p in payloads.items():
+            r = subprocess.run(["bash", str(hook)], input=json.dumps(p), env=self.env,
+                               capture_output=True, text=True, check=True)
+            self.assertEqual(r.stdout.strip(), '{"continue": true}' if name == "cursor" else "")
+        titles = sorted(t["title"] for t in self.summary()["tasks"])
+        self.assertEqual(titles, ["claude", "codex", "cursor", "gemini"])
+
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")
         self.tl("add", "Sprint planning")

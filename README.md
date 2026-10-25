@@ -17,6 +17,9 @@ Developers already leave a precise trail of what they worked on and when: it's c
 `git timelog` reads that trail.
 
 - **Zero effort.** Git hooks record branch switches, commits and merges as they happen.
+- **Coding-agent sessions count too.** With one hook, every Claude Code, Codex, Gemini CLI or
+  Cursor session is tracked from its first prompt, including research that never touches a
+  branch.
 - **Branches are tasks.** `feat/login` shows up on the board the first time you touch it.
   When it's merged (merge commit or fast-forward), the task moves to *done*.
 - **One dashboard, many projects.** Each project gets its own tab with its own board,
@@ -62,6 +65,7 @@ git timelog delete feat/lookup         # hide a task and its time (git timelog r
 git timelog set feat/login ticket WEB-142
 git timelog report                     # write today's standup note
 git timelog repos | remove             # list or stop tracking repos
+git timelog agent-setup codex          # print the hook config for claude | codex | gemini | cursor
 ```
 
 On the dashboard you can drag cards between columns, start timers, log time, attach a
@@ -106,6 +110,9 @@ everything together.
 | No activity for `stale_days` (7) when importing history | **done** |
 | You switch back to, or commit on, a held or done branch | **doing** again |
 | You drag the card or run `git timelog status` | whatever you chose; older merges never override it |
+| An agent session asks its first question on a base branch | **doing** (an "agent session" card) |
+| That session later works on a feature branch | its card is folded into the branch's card |
+| A research-only session closes, or is idle for `session_done_hours` (12) | **done** |
 
 "Been on the branch" means you committed on it, switched to it or switched away from it, so
 branches you only checked out to test or look around also go on hold. Moving a held card back
@@ -120,6 +127,68 @@ task by hand.
 A branch you only created (no commits of your own yet) is never treated as merged, even
 though it sits inside `main`. Merge detection runs whenever new events arrive and at most
 every 5 minutes while the dashboard is open.
+
+## Coding-agent sessions
+
+Coding agents change how work starts: you open a session, ask questions and read code, and
+only then create a branch. git timelog tracks the session itself, so that time isn't lost.
+
+**What you get**
+
+| Situation | On the board |
+|---|---|
+| A session researching on `main` (or in a folder above your repos) | A card named after your first prompt, with an "agent session" label |
+| The session then works on a branch, for example after the [`main` guard](#optional-keep-claude-code-off-main) makes it create one | One card for the branch; the research time before it is folded in |
+| A session started on a feature branch | Its time goes straight to that branch's card |
+| You open the agent and quit without asking anything | No card |
+| A research-only session closes, or goes quiet for 12 hours | Done |
+
+No branch is ever created for you, so there is nothing to clean up afterwards.
+
+**How session time is counted**
+
+- While the agent is working on your request, the time counts, even a 40 minute run (up to
+  `session_gap_min`).
+- Between turns, your reading and testing time counts up to `agent_gap_min` (20 minutes); a
+  longer pause means you were away.
+- Where git activity and agent turns overlap on the same task, each minute is counted once.
+
+**Setup**
+
+One hook script, `~/.local/share/git-timelog/hooks/agent-hook.sh` (installed by
+`install.sh`), works for every supported agent. Print the config for yours and add it to the
+file named in the first line:
+
+```sh
+git timelog agent-setup claude    # ~/.claude/settings.json
+git timelog agent-setup codex     # ~/.codex/hooks.json, then run /hooks in Codex to trust it
+git timelog agent-setup gemini    # ~/.gemini/settings.json
+git timelog agent-setup cursor    # ~/.cursor/hooks.json
+```
+
+For example, for Claude Code the output looks like this (the same block repeats for
+`UserPromptSubmit`, `Stop` and `SessionEnd`):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "/home/you/.local/share/git-timelog/hooks/agent-hook.sh", "timeout": 5 }] }
+    ]
+  }
+}
+```
+
+The hook records the session id, the folder and the current branch, plus the first 80
+characters of the session's first prompt as the card title. It records nothing else from the
+conversation, never blocks the agent, and only sessions inside repos you track (or folder names
+listed under `[projects]`) are kept. Sessions started in a parent folder that holds several
+repos count once you add that folder's name to a project, e.g.
+`Shop = web-app, api, shop-workspace`.
+
+Claude Code and Codex were checked against their documented hook payloads and Claude Code
+also live; Gemini CLI and Cursor against their documentation. Gemini CLI may need hooks
+switched on in its settings, depending on the version.
 
 ## Optional: keep Claude Code off `main`
 
@@ -194,7 +263,10 @@ session starts, and its first commit gets a 30 minute lead-in. This is the same 
 [git-hours](https://github.com/kimmobrunfeldt/git-hours), applied to checkouts as well as
 commits.
 
-It's an estimate. Long stretches of uncommitted work are undercounted, and a meeting in the
+With an [agent hook](#coding-agent-sessions) installed, agent turns are added on top of this
+and overlapping minutes are merged.
+
+It's an estimate. Without an agent hook, long stretches of uncommitted work are undercounted, and a meeting in the
 middle of a branch is counted as work on it. Use `git timelog log`
 or the timer to correct it. Manual time is added on top of git time.
 
@@ -209,6 +281,8 @@ base_branches = main,master,develop,dev,staging,prod,release/*
 session_gap_min = 120
 lead_in_min = 30
 idle_hold_days = 3             ; unmerged branch untouched this long -> on hold
+agent_gap_min = 20             ; agent sessions: your time between turns counts up to this
+session_done_hours = 12        ; research-only agent session idle this long -> done
 stale_days = 7                 ; idle branches are marked done after backfill
 idle_exit_min = 10
 port = 7777                    ; re-run install.sh with PORT=... to change the socket
@@ -230,6 +304,7 @@ Point `standup_dir` into your Obsidian vault to get notes there.
 | Config | `~/.config/git-timelog/config.ini` |
 | systemd units | `~/.config/systemd/user/git-timelog*` |
 | Hooks | one line appended to `post-checkout`, `post-commit`, `post-merge` in each tracked repo |
+| Agent hook (optional) | `~/.local/share/git-timelog/hooks/agent-hook.sh`, referenced from your agent's config |
 
 Existing hooks are kept; `git timelog` adds a single marked line and `git timelog remove`
 takes it out again. If a repo sets `core.hooksPath` to a folder inside the project

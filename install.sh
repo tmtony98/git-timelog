@@ -15,6 +15,7 @@ mkdir -p "$BIN_DIR" "$DATA/web" "$DATA/hooks"
 install -m 755 git-timelog "$BIN"
 install -m 644 web/index.html "$DATA/web/index.html"
 install -m 755 hooks/hook.sh "$DATA/hooks/hook.sh"
+install -m 755 hooks/agent-hook.sh "$DATA/hooks/agent-hook.sh"
 echo "installed $BIN"
 
 if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then

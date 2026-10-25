@@ -54,6 +54,7 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 .card .meta { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--chip); color: var(--muted); }
 .badge.hold { color: var(--warn); }
+.badge.agent { color: var(--accent); }
 .col[data-status="hold"] .card { opacity: .78; }
 .card .meta .h { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
 .card .acts { display: none; gap: 6px; margin-top: 8px; }
@@ -292,7 +293,8 @@ function card(t) {
   return `<div class="card" draggable="true" data-id="${t.id}">
     <div class="t">${esc(t.title)}</div>
     ${t.last_subject ? `<div class="s" title="${esc(t.last_subject)}">${esc(t.last_subject)}</div>` : ""}
-    <div class="meta">${t.repo ? `<span class="badge">${esc(t.repo)}</span>` : ""}
+    <div class="meta">${t.session ? `<span class="badge agent" title="Coding-agent session that hasn't touched a branch: research, questions, planning">agent session</span>` : ""}
+      ${t.repo ? `<span class="badge">${esc(t.repo)}</span>` : ""}
       ${t.ticket ? `<span class="badge">${esc(t.ticket)}</span>` : ""}
       ${t.status === "hold" ? `<span class="badge hold" title="${t.held_auto ? "Put on hold automatically: not merged and untouched" : "You put this on hold"}">${t.held_auto && t.last_seen ? "idle " + Math.floor((Date.now() / 1000 - t.last_seen) / 86400) + "d" : "on hold"}</span>` : ""}
       <span class="badge">${ago(t.last)}</span><span class="h">${fmtH(t.hours)}</span></div>

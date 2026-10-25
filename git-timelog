@@ -22,7 +22,7 @@ from fnmatch import fnmatch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 HOME = Path.home()
 DATA = Path(os.environ.get("GIT_TIMELOG_HOME") or HOME / ".local/share/git-timelog")
@@ -41,6 +41,8 @@ DEFAULTS = {
     "lead_in_min": "30",
     "stale_days": "7",
     "idle_hold_days": "3",      # unmerged branch untouched this long -> hold
+    "agent_gap_min": "20",      # coding-agent session: your think/test time between turns counted up to this
+    "session_done_hours": "12", # research-only agent session (no branch) idle this long -> done
     "idle_exit_min": "10",
     "port": "7777",
     "standup_dir": str(HOME / "Documents/git-timelog/standups"),
@@ -147,6 +149,9 @@ def db():
     if "deleted" not in [r[1] for r in con.execute("PRAGMA table_info(tasks)")]:
         # deleted tasks stay in the table (so the branch isn't re-created) but are hidden everywhere
         con.execute("ALTER TABLE tasks ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+    if "session" not in [r[1] for r in con.execute("PRAGMA table_info(tasks)")]:
+        # coding-agent session id, for sessions that never left a base branch (research tasks)
+        con.execute("ALTER TABLE tasks ADD COLUMN session TEXT")
     return con
 
 
@@ -162,7 +167,52 @@ def ensure_task(con, repo, branch, ts):
     return cur.lastrowid
 
 
+_known = None
+
+
+def known_repos():
+    """Repo names we track: tracked repos plus every name listed under [projects]."""
+    global _known
+    if _known is None:
+        _known = {repo_name(r) for r in repos()} | {m for ms in projects().values() for m in ms}
+    return _known
+
+
+def add_agent_event(con, ts, repo, branch, sid, subject, live):
+    """A coding-agent session event (start, prompt, stop, end) from hooks/agent-hook.sh.
+
+    The session itself is the task until it touches a feature branch: on a base
+    branch (or outside a repo) a "session task" titled from the first prompt
+    collects the time; once the session works on a branch, that branch's task
+    takes over and the session's earlier research time is folded into it.
+    """
+    if repo not in known_repos():
+        return  # sessions in folders we don't track
+    con.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?)", (ts, "agent", repo, branch, sid, subject))
+    what, _, title = subject.partition("|")
+    if branch and not is_base(branch):
+        ensure_task(con, repo, branch, ts)
+        if live:
+            con.execute("UPDATE tasks SET status='doing', updated=?, reopened=? WHERE repo=? AND branch=? "
+                        "AND status IN ('done', 'hold') AND updated < ?", (ts, ts, repo, branch, ts))
+        return
+    row = con.execute("SELECT id, title FROM tasks WHERE session=?", (sid,)).fetchone()
+    if row is None and what == "prompt":  # opening and closing the agent without asking anything isn't a task
+        con.execute("INSERT INTO tasks(repo, branch, title, status, created, updated, session) VALUES(?,?,?,?,?,?,?)",
+                    (repo, None, title or "Agent session", "doing", ts, ts, sid))
+    elif row is not None and title and row["title"] == "Agent session":
+        con.execute("UPDATE tasks SET title=? WHERE id=?", (title, row["id"]))
+    if live and row is not None:
+        if what == "end":
+            con.execute("UPDATE tasks SET status='done', updated=? WHERE id=? AND status='doing'", (ts, row["id"]))
+        elif what == "prompt":
+            con.execute("UPDATE tasks SET status='doing', updated=?, reopened=? WHERE id=? "
+                        "AND status IN ('done', 'hold')", (ts, ts, row["id"]))
+
+
 def add_event(con, ts, kind, repo, branch, sha, subject, live=False):
+    if kind == "agent":
+        return add_agent_event(con, ts, repo, branch, sha, subject, live)
     con.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?)",
                 (ts, kind, repo, branch, sha, subject))
     ensure_task(con, repo, branch, ts)
@@ -296,7 +346,8 @@ def landed_by_copy(repo, branch, base, tip):
 
 # Last time you were on a task's branch: committed on it, switched to it or away from it.
 LAST_SEEN = ("SELECT MAX(e.ts) FROM events e WHERE e.repo=tasks.repo AND e.kind NOT IN ('merge', 'merged') "
-             "AND (e.branch=tasks.branch OR e.subject='from:' || tasks.branch)")
+             "AND (e.branch=tasks.branch OR e.subject='from:' || tasks.branch "
+             "OR (e.kind='agent' AND e.sha=tasks.session))")
 
 
 def mark_idle(con):
@@ -307,6 +358,10 @@ def mark_idle(con):
     """
     cutoff = now() - int(float(C["idle_hold_days"]) * 86400)
     con.execute(f"UPDATE tasks SET status='hold', held_auto=1 WHERE status='doing' AND branch IS NOT NULL "
+                f"AND COALESCE(reopened, 0) < ? AND COALESCE(({LAST_SEEN}), 0) < ?", (cutoff, cutoff))
+    # Research-only agent sessions have nothing to merge: done once they go quiet.
+    cutoff = now() - int(float(C["session_done_hours"]) * 3600)
+    con.execute(f"UPDATE tasks SET status='done' WHERE status='doing' AND session IS NOT NULL AND branch IS NULL "
                 f"AND COALESCE(reopened, 0) < ? AND COALESCE(({LAST_SEEN}), 0) < ?", (cutoff, cutoff))
 
 
@@ -355,7 +410,7 @@ def intervals(con):
     gap, lead = int(C["session_gap_min"]) * 60, int(C["lead_in_min"]) * 60
     tasks = {(r["repo"], r["branch"]): r["id"] for r in con.execute("SELECT id, repo, branch FROM tasks")}
     out, last_ts = [], None
-    for e in con.execute("SELECT * FROM events ORDER BY ts"):
+    for e in con.execute("SELECT * FROM events WHERE kind != 'agent' ORDER BY ts"):  # agent turns: agent_intervals
         repo, ts = e["repo"], e["ts"]
         # Commits know their branch (worktrees can have several checked out at once).
         before = e["subject"][5:] if e["kind"] == "checkout" else e["branch"]
@@ -366,8 +421,72 @@ def intervals(con):
         elif tid and e["kind"] != "checkout":
             out.append((tid, ts - lead, ts, "git"))
         last_ts = ts
+    out = union(out + agent_intervals(con, tasks, gap))  # git gaps and agent turns often overlap
     for r in con.execute("SELECT task_id, start, COALESCE(end, ?) AS end, source FROM entries", (now(),)):
         out.append((r["task_id"], r["start"], r["end"], r["source"]))
+    return out
+
+
+def agent_sessions(con):
+    """{session id: [event rows in time order]} for coding-agent sessions."""
+    out = {}
+    for e in con.execute("SELECT ts, repo, branch, sha, subject FROM events WHERE kind='agent' ORDER BY ts"):
+        out.setdefault(e["sha"], []).append(e)
+    return out
+
+
+def folded_sessions(con):
+    """Sessions that worked on a feature branch: their research time belongs to that branch's task."""
+    return {sid for sid, evs in agent_sessions(con).items()
+            if any(e["branch"] and not is_base(e["branch"]) for e in evs)}
+
+
+def agent_intervals(con, tasks, gap):
+    """Time from coding-agent turns.
+
+    While the agent is working (prompt -> stop) the gap counts up to the git
+    session gap; your think/test time between turns (stop -> next prompt)
+    counts up to agent_gap_min. Base-branch events go to the session's
+    nearest feature branch if it has one, otherwise to its session task.
+    """
+    think = int(C["agent_gap_min"]) * 60
+    session_task = {r["session"]: r["id"]
+                    for r in con.execute("SELECT id, session FROM tasks WHERE session IS NOT NULL")}
+    out = []
+    for sid, evs in agent_sessions(con).items():
+        own = [tasks.get((e["repo"], e["branch"])) if e["branch"] and not is_base(e["branch"]) else None
+               for e in evs]
+        target = []
+        for i, t in enumerate(own):
+            if t is None:
+                later = next((x for x in own[i + 1:] if x), None)
+                earlier = next((x for x in reversed(own[:i]) if x), None)
+                t = later or earlier or session_task.get(sid)
+            target.append(t)
+        for i in range(1, len(evs)):
+            a, b = evs[i - 1], evs[i]
+            limit = gap if a["subject"].startswith("prompt") else think
+            if target[i] and 0 <= b["ts"] - a["ts"] < limit:
+                out.append((target[i], a["ts"], b["ts"], "agent"))
+    return out
+
+
+def union(ivs):
+    """Merge overlapping intervals of the same task so no minute is counted twice."""
+    by = {}
+    for tid, s, e, src in ivs:
+        by.setdefault(tid, []).append((s, e, src))
+    out = []
+    for tid, lst in by.items():
+        lst.sort()
+        cs, ce, csrc = lst[0]
+        for s, e, src in lst[1:]:
+            if s <= ce:
+                ce = max(ce, e)
+            else:
+                out.append((tid, cs, ce, csrc))
+                cs, ce, csrc = s, e, src
+        out.append((tid, cs, ce, csrc))
     return out
 
 
@@ -376,7 +495,9 @@ def summary(con):
     today = dt.date.today()
     week_start = today - dt.timedelta(days=today.weekday())
     per_task, per_day = {}, {}
-    hidden = {r[0] for r in con.execute("SELECT id FROM tasks WHERE deleted=1")}
+    folded = folded_sessions(con)
+    hidden = {r["id"] for r in con.execute("SELECT id, session, branch, deleted FROM tasks")
+              if r["deleted"] or (r["session"] in folded and r["branch"] is None)}
     for tid, s, e, _ in intervals(con):
         if tid in hidden:
             continue
@@ -393,6 +514,8 @@ def summary(con):
         "WHERE e.kind='commit' ORDER BY e.ts")}
     tasks = []
     for t in con.execute(f"SELECT *, ({LAST_SEEN}) AS last_seen FROM tasks WHERE deleted=0 ORDER BY updated DESC"):
+        if t["id"] in hidden:
+            continue  # session folded into its branch's task
         c = commits.get(t["id"], {})
         tasks.append({**dict(t), "hours": round(per_task.get(t["id"], 0) / 3600, 2),
                       "commits": c.get("n", 0), "last": max(c.get("last") or 0, t["updated"] or 0),
@@ -440,7 +563,7 @@ def summary(con):
         "repos": sorted(tracked | {t["repo"] for t in tasks if t["repo"]}),
         "tasks": tasks, "days": days,
         "activity": [{**dict(r), "project": project_of(r["repo"], table)}
-                     for r in con.execute("SELECT * FROM events ORDER BY ts DESC LIMIT 300")],
+                     for r in con.execute("SELECT * FROM events WHERE kind != 'agent' ORDER BY ts DESC LIMIT 300")],
         "timer": dict(timer) if timer else None,
     }
 
@@ -674,6 +797,45 @@ def hook_script():
     raise SystemExit("git-timelog: hooks/hook.sh not found; re-run install.sh")
 
 
+AGENTS = {
+    # agent: (config file, {our event: the agent's event name}, extra fields per hook)
+    "claude": ("~/.claude/settings.json",
+               {"start": "SessionStart", "prompt": "UserPromptSubmit", "stop": "Stop", "end": "SessionEnd"},
+               {"timeout": 5}),
+    "codex": ("~/.codex/hooks.json",
+              {"start": "SessionStart", "prompt": "UserPromptSubmit", "stop": "Stop", "end": "SessionEnd"},
+              {"timeout": 5}),
+    "gemini": ("~/.gemini/settings.json",
+               {"start": "SessionStart", "prompt": "BeforeAgent", "stop": "AfterAgent", "end": "SessionEnd"},
+               {"name": "git-timelog", "timeout": 5000}),
+    "cursor": ("~/.cursor/hooks.json",
+               {"start": "sessionStart", "prompt": "beforeSubmitPrompt", "stop": "stop", "end": "sessionEnd"},
+               {}),
+}
+
+
+def agent_setup(agent):
+    """Print the hook config that makes a coding agent report its sessions."""
+    path, events, extra = AGENTS[agent]
+    hook = None
+    for p in (DATA / "hooks/agent-hook.sh", Path(__file__).resolve().parent / "hooks/agent-hook.sh"):
+        if p.exists():
+            hook = str(p)
+            break
+    if not hook:
+        raise SystemExit("git-timelog: hooks/agent-hook.sh not found; re-run install.sh")
+    if agent == "cursor":
+        cfg = {"version": 1, "hooks": {ev: [{"command": hook}] for ev in events.values()}}
+    else:
+        cfg = {"hooks": {ev: [{"hooks": [{"type": "command", "command": hook, **extra}]}] for ev in events.values()}}
+    print(f"# Add to {path} (merge into the existing \"hooks\" if the file has one):")
+    print(json.dumps(cfg, indent=2))
+    if agent == "codex":
+        print("# Then run /hooks inside Codex once to review and trust the new hooks.")
+    if agent == "gemini":
+        print("# Gemini CLI hooks may need enabling in settings.json depending on your version; see its hooks docs.")
+
+
 def init_repo(path, days):
     top = git(path, "rev-parse", "--show-toplevel").strip()
     if not top:
@@ -816,6 +978,8 @@ def main():
     p = sub.add_parser("ingest", help="import queued hook events (automatic on every read)")
     p.add_argument("--backfill", type=int, metavar="DAYS")
     sub.add_parser("demo", help="fill an empty database with fictional data")
+    p = sub.add_parser("agent-setup", help="print the hook config that tracks a coding agent's sessions")
+    p.add_argument("agent", choices=sorted(AGENTS))
     a = ap.parse_args()
 
     if a.cmd is None:
@@ -838,6 +1002,8 @@ def main():
         return
     if a.cmd == "demo":
         return demo()
+    if a.cmd == "agent-setup":
+        return agent_setup(a.agent)
     con = db()
     if a.cmd == "ingest":
         if a.backfill:
