@@ -1,10 +1,16 @@
 # git timelog
 
-**Your git history is already a timesheet.**
+**Task and time tracking for agentic coding. You never press start.**
 
-`git timelog` is a time tracker you never have to start. Every branch becomes a task,
-every checkout and commit becomes a data point, and a local dashboard shows where your
-hours went. No account, no cloud, no browser extension, no Electron app.
+Every coding-agent session and every git branch becomes a task, with its hours filled in for you.
+
+- **Ask your agent something** (Claude Code, Codex, Gemini CLI or Cursor) and the task starts.
+- **It creates a branch**, and the work and the research before it land on that branch's card.
+- **The PR merges**, and the task moves to done.
+
+A local dashboard shows every project, task and hour, and your daily standup note is written
+for you (automatically each weekday evening on Linux). It runs on your machine: no account,
+no cloud, nothing to `pip install`.
 
 ![Dashboard: project tabs, task board with hours per branch](docs/dashboard.jpg)
 
