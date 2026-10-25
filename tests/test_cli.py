@@ -275,6 +275,43 @@ class CliTest(unittest.TestCase):
         titles = sorted(t["title"] for t in self.summary()["tasks"])
         self.assertEqual(titles, ["claude", "codex", "cursor", "gemini"])
 
+    def run_agent_hook(self, payload):
+        r = subprocess.run(["bash", str(ROOT / "hooks" / "agent-hook.sh")], input=json.dumps(payload),
+                           env=self.env, capture_output=True, text=True, check=True)
+        return r.stdout
+
+    def logged(self):
+        log = Path(self.env["GIT_TIMELOG_HOME"]) / "events.log"
+        return log.read_text() if log.exists() else ""
+
+    def test_agent_hook_writes_nothing_for_untracked_folders(self):
+        self.tl("init", "--days", "0")  # writes the tracked-repos list the hook checks
+        other = Path(self.tmp.name) / "private-notes"
+        other.mkdir()
+        self.run_agent_hook({"hook_event_name": "UserPromptSubmit", "session_id": "p1",
+                             "cwd": str(other), "prompt": "something private"})
+        self.assertNotIn("private", self.logged())
+        self.run_agent_hook({"hook_event_name": "UserPromptSubmit", "session_id": "p2",
+                             "cwd": str(self.repo), "prompt": "tracked work"})
+        self.assertIn("prompt|tracked work", self.logged())
+
+    def test_agent_titles_off_keeps_prompt_text_out_of_the_log(self):
+        Path(self.env["GIT_TIMELOG_CONFIG"]).write_text("[git-timelog]\nagent_titles = off\n")
+        self.tl("init", "--days", "0")
+        self.run_agent_hook({"hook_event_name": "UserPromptSubmit", "session_id": "t1",
+                             "cwd": str(self.repo), "prompt": "secret plan"})
+        self.assertNotIn("secret", self.logged())
+        t = next(t for t in self.summary()["tasks"] if t["session"] == "t1")
+        self.assertEqual(t["title"], "Agent session")
+
+    def test_agent_hook_cleans_up_long_prompts(self):
+        self.tl("init", "--days", "0")
+        self.run_agent_hook({"hook_event_name": "UserPromptSubmit", "session_id": "l1", "cwd": str(self.repo),
+                             "prompt": "  fix\tthe   cart\n\nbadge " + "x" * 200})
+        title = self.logged().strip().split("\t")[-1]
+        self.assertTrue(title.startswith("prompt|fix the cart badge x"))
+        self.assertEqual(len(title), len("prompt|") + 80)
+
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")
         self.tl("add", "Sprint planning")

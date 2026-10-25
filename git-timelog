@@ -14,6 +14,7 @@ import json
 import os
 import random
 import re
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -22,7 +23,7 @@ from fnmatch import fnmatch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 HOME = Path.home()
 DATA = Path(os.environ.get("GIT_TIMELOG_HOME") or HOME / ".local/share/git-timelog")
@@ -43,6 +44,7 @@ DEFAULTS = {
     "idle_hold_days": "3",      # unmerged branch untouched this long -> hold
     "agent_gap_min": "20",      # coding-agent session: your think/test time between turns counted up to this
     "session_done_hours": "12", # research-only agent session (no branch) idle this long -> done
+    "agent_titles": "prompt",   # card title for agent sessions: "prompt" (first 80 chars) or "off"
     "idle_exit_min": "10",
     "port": "7777",
     "standup_dir": str(HOME / "Documents/git-timelog/standups"),
@@ -178,6 +180,28 @@ def known_repos():
     return _known
 
 
+def sync_hook_files():
+    """Tell the agent hook what it may write down: tracked repo names, and whether to keep titles.
+
+    The hook reads these plain files instead of the config, so sessions in other
+    folders (and, with agent_titles = off, prompt text) never reach the event log.
+    """
+    global _known
+    _known = None
+    DATA.mkdir(parents=True, exist_ok=True)
+    names = "".join(f"{n}\n" for n in sorted(known_repos()))
+    path = DATA / "tracked-repos"
+    if not path.exists() or path.read_text() != names:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(names)
+        tmp.replace(path)
+    flag = DATA / "no-titles"
+    if C["agent_titles"].strip().lower() == "off":
+        flag.touch()
+    elif flag.exists():
+        flag.unlink()
+
+
 def add_agent_event(con, ts, repo, branch, sid, subject, live):
     """A coding-agent session event (start, prompt, stop, end) from hooks/agent-hook.sh.
 
@@ -237,6 +261,7 @@ def add_event(con, ts, kind, repo, branch, sha, subject, live=False):
 
 
 def ingest(con):
+    sync_hook_files()
     if not LOG_PATH.exists():
         return 0
     row = con.execute("SELECT v FROM meta WHERE k='offset'").fetchone()
@@ -824,6 +849,10 @@ def agent_setup(agent):
             break
     if not hook:
         raise SystemExit("git-timelog: hooks/agent-hook.sh not found; re-run install.sh")
+    if not shutil.which("jq"):
+        print("# WARNING: jq is not installed, so the hook can't read the agent's events.\n"
+              "# Install it first (e.g. sudo apt install jq, brew install jq).", file=sys.stderr)
+    sync_hook_files()
     if agent == "cursor":
         cfg = {"version": 1, "hooks": {ev: [{"command": hook}] for ev in events.values()}}
     else:
@@ -858,6 +887,7 @@ def init_repo(path, days):
     if str(repo) not in listed:
         C["repos"] = ",".join(listed + [str(repo)])
         save_conf()
+    sync_hook_files()
     con = db()
     n = backfill(con, days, only=[repo]) if days else 0
     print(f"tracking {repo}; backfilled {n} events")
@@ -894,6 +924,7 @@ def remove_repo(path):
                 f.write_text("".join(kept))
     C["repos"] = ",".join(str(p) for p in repos() if str(p) != top)
     save_conf()
+    sync_hook_files()
     print(f"stopped tracking {top}")
 
 

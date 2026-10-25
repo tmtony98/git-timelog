@@ -10,6 +10,7 @@ BIN="$BIN_DIR/git-timelog"
 
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
+command -v jq >/dev/null || echo "note: jq isn't installed; it's only needed for coding-agent session tracking" >&2
 
 mkdir -p "$BIN_DIR" "$DATA/web" "$DATA/hooks"
 install -m 755 git-timelog "$BIN"

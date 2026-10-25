@@ -39,8 +39,10 @@ Developers already leave a precise trail of what they worked on and when: it's c
 
 ## Install
 
-Requires `git` (2.31+) and `python3` (3.8+). Linux with systemd gets the on-demand dashboard and the
-scheduled standup note; macOS and others run the dashboard with `git timelog serve`.
+Requires `git` (2.31+) and `python3` (3.8+), plus [`jq`](https://jqlang.github.io/jq/) if you
+want coding-agent sessions tracked. Linux with systemd gets the on-demand dashboard and the
+scheduled standup note; macOS and others run the dashboard with `git timelog serve`. Windows
+isn't supported.
 
 ```sh
 git clone https://github.com/tmtony98/git-timelog.git
@@ -185,12 +187,20 @@ For example, for Claude Code the output looks like this (the same block repeats 
 }
 ```
 
-The hook records the session id, the folder and the current branch, plus the first 80
-characters of the session's first prompt as the card title. It records nothing else from the
-conversation, never blocks the agent, and only sessions inside repos you track (or folder names
-listed under `[projects]`) are kept. Sessions started in a parent folder that holds several
-repos count once you add that folder's name to a project, e.g.
-`Shop = web-app, api, shop-workspace`.
+**What the hook writes down, and what it doesn't**
+
+- For each event: the time, the session id, the repo and the current branch. For the session's
+  first prompt, also its first 80 characters, used as the card title. Nothing else from the
+  conversation.
+- Only sessions inside repos you track, or folder names listed under `[projects]`, are written
+  at all. Sessions anywhere else leave no trace. (git timelog keeps the hook's list of allowed
+  names in `~/.local/share/git-timelog/tracked-repos`.)
+- Prefer no prompt text on disk? Set `agent_titles = off`; cards are then called "Agent session".
+- It needs `jq`. `install.sh` and `agent-setup` warn if it's missing; without it, sessions just
+  aren't tracked. It never blocks or slows the agent noticeably (about 20 ms per event).
+
+Sessions started in a parent folder that holds several repos count once you add that folder's
+name to a project, e.g. `Shop = web-app, api, shop-workspace`.
 
 Claude Code and Codex were checked against their documented hook payloads and Claude Code
 also live; Gemini CLI and Cursor against their documentation. Gemini CLI may need hooks
@@ -289,6 +299,7 @@ lead_in_min = 30
 idle_hold_days = 3             ; unmerged branch untouched this long -> on hold
 agent_gap_min = 20             ; agent sessions: your time between turns counts up to this
 session_done_hours = 12        ; research-only agent session idle this long -> done
+agent_titles = prompt          ; "off" keeps prompt text out of the log and cards
 stale_days = 7                 ; idle branches are marked done after backfill
 idle_exit_min = 10
 port = 7777                    ; re-run install.sh with PORT=... to change the socket

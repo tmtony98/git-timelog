@@ -13,4 +13,4 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -v tests
-      - run: bash -n install.sh uninstall.sh hooks/hook.sh
+      - run: for f in install.sh uninstall.sh hooks/hook.sh hooks/agent-hook.sh; do bash -n "$f"; done
