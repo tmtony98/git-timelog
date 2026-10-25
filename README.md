@@ -12,9 +12,9 @@ A local dashboard shows every project, task and hour, and your daily standup not
 for you (automatically each weekday evening on Linux). It runs on your machine: no account,
 no cloud, nothing to `pip install`.
 
-![Dashboard: project tabs, task board with hours per branch](docs/dashboard.jpg)
+![Dashboard: project tabs, totals, and a board with an agent-session card, idle branches on hold and merged ones done](docs/dashboard.jpg)
 
-![Hours per day and activity feed](docs/chart.jpg)
+![Hours per day per task, including agent sessions, and the activity feed](docs/chart.jpg)
 
 ## Why
 
