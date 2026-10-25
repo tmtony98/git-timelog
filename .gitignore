@@ -3,3 +3,4 @@ __pycache__/
 *.db
 events.log
 .DS_Store
+brag-output*/
