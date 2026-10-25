@@ -12,6 +12,10 @@ A local dashboard shows every project, task and hour, and your daily standup not
 for you (automatically each weekday evening on Linux). It runs on your machine: no account,
 no cloud, nothing to `pip install`.
 
+[![Watch the 30-second launch video](docs/launch-video.jpg)](https://github.com/tmtony98/git-timelog/releases/download/v0.7.0/git-timelog-launch.mp4)
+
+▶ **[Watch the 30-second launch video](https://github.com/tmtony98/git-timelog/releases/download/v0.7.0/git-timelog-launch.mp4)** (mp4, 4 MB)
+
 ![Dashboard: project tabs, totals, and a board with an agent-session card, idle branches on hold and merged ones done](docs/dashboard.jpg)
 
 ![Hours per day per task, including agent sessions, and the activity feed](docs/chart.jpg)
