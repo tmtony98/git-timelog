@@ -69,6 +69,17 @@ def load_conf():
 
 CP = load_conf()
 C = CP["git-timelog"]
+CONF_MTIME = CONF_PATH.stat().st_mtime if CONF_PATH.exists() else None
+
+
+def reload_conf_if_changed():
+    """The dashboard outlives `git timelog init` and config edits; re-read when the file changes."""
+    global CP, C, CONF_MTIME
+    mtime = CONF_PATH.stat().st_mtime if CONF_PATH.exists() else None
+    if mtime != CONF_MTIME:
+        CP = load_conf()
+        C = CP["git-timelog"]
+        CONF_MTIME = mtime
 
 
 def save_conf():
@@ -745,6 +756,7 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if method != "GET" and origin and origin != f"http://{self.headers.get('Host')}":
             return self.send(403, {"error": "cross-origin request refused"})
+        reload_conf_if_changed()
         con = db()
         try:
             p = self.path.split("?")[0]

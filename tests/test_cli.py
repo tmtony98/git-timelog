@@ -4,11 +4,13 @@ Run with: python3 -m unittest discover tests
 """
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -158,6 +160,22 @@ class CliTest(unittest.TestCase):
         self.assertEqual(shop["repos"], ["shop-web", "shop-api"])
         self.assertEqual(shop["kpi"]["commits_week"], 1)
         self.assertEqual(next(t for t in s["tasks"] if t["branch"] == "feat/cart")["project"], "Shop")
+
+    def test_dashboard_picks_up_repo_added_while_running(self):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        srv = subprocess.Popen([sys.executable, "-u", str(CLI), "serve", "--port", str(port)], cwd=self.repo,
+                               env=self.env, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(srv.kill)
+        srv.stdout.readline()  # listening
+
+        def tabs():
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/summary") as r:
+                return [p["name"] for p in json.load(r)["projects"]]
+        self.assertNotIn("shop-web", tabs())
+        self.tl("init", "--days", "0")  # e.g. a new project, while the dashboard is up
+        self.assertIn("shop-web", tabs())
 
     def old_events(self, branch, days_ago):
         """Pretend you last worked on `branch` some days ago (append to the hook log)."""
