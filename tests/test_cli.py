@@ -312,6 +312,68 @@ class CliTest(unittest.TestCase):
         self.assertTrue(title.startswith("prompt|fix the cart badge x"))
         self.assertEqual(len(title), len("prompt|") + 80)
 
+    def agent_cfg(self, agent, content=None):
+        """Path of the agent's config inside a throwaway HOME, optionally pre-filled."""
+        home = Path(self.tmp.name) / "home"
+        self.env["HOME"] = str(home)
+        path = home / {"claude": ".claude/settings.json", "codex": ".codex/hooks.json",
+                       "gemini": ".gemini/settings.json", "cursor": ".cursor/hooks.json"}[agent]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if content is not None:
+            path.write_text(content if isinstance(content, str) else json.dumps(content))
+        return path
+
+    def test_agent_setup_write_merges_and_keeps_everything_else(self):
+        existing = {"model": "opus", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "notify-send done"}]}],
+                                               "PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command",
+                                                                                             "command": "guard"}]}]}}
+        path = self.agent_cfg("claude", existing)
+        out = self.tl("agent-setup", "claude", "--write").stdout
+        self.assertIn("hooks added", out)
+        cfg = json.loads(path.read_text())
+        self.assertEqual(cfg["model"], "opus")
+        self.assertEqual(cfg["hooks"]["PreToolUse"], existing["hooks"]["PreToolUse"])
+        stop_cmds = [h["command"] for e in cfg["hooks"]["Stop"] for h in e["hooks"]]
+        self.assertEqual(stop_cmds[0], "notify-send done")
+        self.assertTrue(stop_cmds[1].endswith("/git-timelog/hooks/agent-hook.sh") or stop_cmds[1].endswith("hooks/agent-hook.sh"))
+        for ev in ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"):
+            self.assertIn(ev, cfg["hooks"])
+        self.assertEqual(json.loads(Path(str(path) + ".git-timelog.bak").read_text()), existing)
+
+    def test_agent_setup_write_twice_changes_nothing_and_remove_restores(self):
+        existing = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "notify-send done"}]}]}}
+        path = self.agent_cfg("codex", existing)
+        self.tl("agent-setup", "codex", "--write")
+        once = path.read_text()
+        out = self.tl("agent-setup", "codex", "--write").stdout
+        self.assertIn("already set up", out)
+        self.assertEqual(path.read_text(), once)
+        self.assertIn("/hooks", out)  # Codex needs the trust step
+        self.tl("agent-setup", "codex", "--remove")
+        self.assertEqual(json.loads(path.read_text()), existing)
+
+    def test_agent_setup_write_creates_cursor_config_in_its_format(self):
+        path = self.agent_cfg("cursor")
+        self.tl("agent-setup", "cursor", "--write")
+        cfg = json.loads(path.read_text())
+        self.assertEqual(cfg["version"], 1)
+        self.assertEqual(sorted(cfg["hooks"]), ["beforeSubmitPrompt", "sessionEnd", "sessionStart", "stop"])
+        self.assertIn("command", cfg["hooks"]["stop"][0])
+        self.tl("agent-setup", "cursor", "--remove")
+        self.assertEqual(json.loads(path.read_text()), {"version": 1})
+
+    def test_agent_setup_refuses_broken_config_or_missing_agent(self):
+        path = self.agent_cfg("gemini", "{ not json")
+        r = self.tl("agent-setup", "gemini", "--write", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("isn't valid JSON", r.stderr)
+        self.assertEqual(path.read_text(), "{ not json")
+        path.unlink()
+        path.parent.rmdir()
+        r = self.tl("agent-setup", "gemini", "--write", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Is gemini installed?", r.stderr)
+
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")
         self.tl("add", "Sprint planning")

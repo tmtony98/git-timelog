@@ -839,9 +839,86 @@ AGENTS = {
 }
 
 
-def agent_setup(agent):
-    """Print the hook config that makes a coding agent report its sessions."""
-    path, events, extra = AGENTS[agent]
+def is_ours(h):
+    """A hook entry running our agent hook, wherever git-timelog is installed or checked out."""
+    cmd = str(h.get("command", "")) if isinstance(h, dict) else ""
+    return cmd.endswith("/hooks/agent-hook.sh") and "git-timelog" in cmd
+
+
+def agent_config(agent, hook):
+    """The hook entries git-timelog needs in an agent's config file."""
+    _, events, extra = AGENTS[agent]
+    if agent == "cursor":
+        return {"version": 1, "hooks": {ev: [{"command": hook}] for ev in events.values()}}
+    return {"hooks": {ev: [{"hooks": [{"type": "command", "command": hook, **extra}]}] for ev in events.values()}}
+
+
+def merge_hooks(cfg, agent, hook):
+    """Add (or re-point) our hooks in cfg in place. Returns True if anything changed."""
+    _, events, extra = AGENTS[agent]
+    hooks = cfg.setdefault("hooks", {})
+    changed = False
+    if agent == "cursor" and "version" not in cfg:
+        cfg["version"] = 1
+        changed = True
+    for ev in events.values():
+        entries = hooks.setdefault(ev, [])
+        if not isinstance(entries, list):
+            raise SystemExit(f"git-timelog: \"hooks.{ev}\" isn't a list in the agent's config; nothing changed.")
+        mine = [h for e in entries
+                for h in ([e] if agent == "cursor" else (e.get("hooks", []) if isinstance(e, dict) else []))
+                if is_ours(h)]
+        if mine:
+            for h in mine:
+                if h["command"] != hook:  # installed somewhere else before: point at this copy
+                    h["command"] = hook
+                    changed = True
+            continue
+        entries.append({"command": hook} if agent == "cursor"
+                       else {"hooks": [{"type": "command", "command": hook, **extra}]})
+        changed = True
+    return changed
+
+
+def strip_hooks(cfg, agent):
+    """Remove our hooks from cfg in place, dropping containers they leave empty. Returns True if changed."""
+    hooks = cfg.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    changed = False
+    for ev in list(hooks):
+        if not isinstance(hooks[ev], list):
+            continue
+        kept = []
+        for e in hooks[ev]:
+            if agent == "cursor":
+                if is_ours(e):
+                    changed = True
+                    continue
+            elif isinstance(e, dict) and isinstance(e.get("hooks"), list):
+                inner = [h for h in e["hooks"] if not is_ours(h)]
+                if len(inner) != len(e["hooks"]):
+                    changed = True
+                    if not inner:
+                        continue
+                    e = {**e, "hooks": inner}
+            kept.append(e)
+        if kept:
+            hooks[ev] = kept
+        else:
+            del hooks[ev]
+    if not hooks:
+        del cfg["hooks"]
+    return changed
+
+
+def agent_setup(agent, mode="print"):
+    """Print, write or remove the hook config that makes a coding agent report its sessions.
+
+    --write and --remove edit only the "hooks" part of the agent's config file,
+    keep a backup next to it first, and do nothing if there's nothing to change.
+    """
+    path = Path(os.path.expanduser(AGENTS[agent][0]))
     hook = None
     for p in (DATA / "hooks/agent-hook.sh", Path(__file__).resolve().parent / "hooks/agent-hook.sh"):
         if p.exists():
@@ -849,20 +926,43 @@ def agent_setup(agent):
             break
     if not hook:
         raise SystemExit("git-timelog: hooks/agent-hook.sh not found; re-run install.sh")
-    if not shutil.which("jq"):
-        print("# WARNING: jq is not installed, so the hook can't read the agent's events.\n"
-              "# Install it first (e.g. sudo apt install jq, brew install jq).", file=sys.stderr)
+    if mode != "remove" and not shutil.which("jq"):
+        print("WARNING: jq is not installed, so the hook can't read the agent's events.\n"
+              "Install it first (e.g. sudo apt install jq, brew install jq).", file=sys.stderr)
     sync_hook_files()
-    if agent == "cursor":
-        cfg = {"version": 1, "hooks": {ev: [{"command": hook}] for ev in events.values()}}
+    if mode == "print":
+        print(f"# Add to {AGENTS[agent][0]} (merge into the existing \"hooks\" if the file has one),")
+        print(f"# or let git timelog do it: git timelog agent-setup {agent} --write")
+        print(json.dumps(agent_config(agent, hook), indent=2))
     else:
-        cfg = {"hooks": {ev: [{"hooks": [{"type": "command", "command": hook, **extra}]}] for ev in events.values()}}
-    print(f"# Add to {path} (merge into the existing \"hooks\" if the file has one):")
-    print(json.dumps(cfg, indent=2))
-    if agent == "codex":
-        print("# Then run /hooks inside Codex once to review and trust the new hooks.")
-    if agent == "gemini":
-        print("# Gemini CLI hooks may need enabling in settings.json depending on your version; see its hooks docs.")
+        if not path.parent.is_dir():
+            raise SystemExit(f"git-timelog: {path.parent} doesn't exist. Is {agent} installed? Nothing changed.")
+        try:
+            cfg = json.loads(path.read_text()) if path.exists() and path.read_text().strip() else {}
+        except ValueError as e:
+            raise SystemExit(f"git-timelog: {path} isn't valid JSON ({e}). Fix it first; nothing changed.")
+        if not isinstance(cfg, dict) or not isinstance(cfg.get("hooks", {}), dict):
+            raise SystemExit(f"git-timelog: unexpected layout in {path}; nothing changed. "
+                             f"Use 'git timelog agent-setup {agent}' and add the hooks by hand.")
+        changed = merge_hooks(cfg, agent, hook) if mode == "write" else strip_hooks(cfg, agent)
+        if not changed:
+            print(f"{path}: {'already set up' if mode == 'write' else 'no git-timelog hooks found'}; nothing changed.")
+        else:
+            if path.exists():
+                backup = path.with_name(path.name + ".git-timelog.bak")
+                shutil.copy2(path, backup)
+                print(f"backup: {backup}")
+            tmp = path.with_name(path.name + ".git-timelog.tmp")
+            tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+            tmp.replace(path)
+            print(f"{path}: git-timelog hooks {'added' if mode == 'write' else 'removed'}.")
+    if mode != "remove":
+        if agent == "codex":
+            print("Next: run /hooks inside Codex once to review and trust the hooks.")
+        if agent == "gemini":
+            print("Note: depending on your Gemini CLI version, hooks may need enabling in its settings.")
+        if mode == "write":
+            print("New sessions are tracked from their first prompt; restart open sessions to pick it up.")
 
 
 def init_repo(path, days):
@@ -1009,8 +1109,12 @@ def main():
     p = sub.add_parser("ingest", help="import queued hook events (automatic on every read)")
     p.add_argument("--backfill", type=int, metavar="DAYS")
     sub.add_parser("demo", help="fill an empty database with fictional data")
-    p = sub.add_parser("agent-setup", help="print the hook config that tracks a coding agent's sessions")
+    p = sub.add_parser("agent-setup", help="set up session tracking for a coding agent (prints the config; "
+                                           "--write adds it for you, --remove takes it out)")
     p.add_argument("agent", choices=sorted(AGENTS))
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--write", action="store_true", help="add the hooks to the agent's config (keeps a backup)")
+    g.add_argument("--remove", action="store_true", help="remove git-timelog's hooks from the agent's config")
     a = ap.parse_args()
 
     if a.cmd is None:
@@ -1034,7 +1138,7 @@ def main():
     if a.cmd == "demo":
         return demo()
     if a.cmd == "agent-setup":
-        return agent_setup(a.agent)
+        return agent_setup(a.agent, "write" if a.write else "remove" if a.remove else "print")
     con = db()
     if a.cmd == "ingest":
         if a.backfill:

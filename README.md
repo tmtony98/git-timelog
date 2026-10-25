@@ -73,7 +73,7 @@ git timelog delete feat/lookup         # hide a task and its time (git timelog r
 git timelog set feat/login ticket WEB-142
 git timelog report                     # write today's standup note
 git timelog repos | remove             # list or stop tracking repos
-git timelog agent-setup codex          # print the hook config for claude | codex | gemini | cursor
+git timelog agent-setup codex --write  # track coding-agent sessions: claude | codex | gemini | cursor
 ```
 
 On the dashboard you can drag cards between columns, start timers, log time, attach a
@@ -164,17 +164,22 @@ No branch is ever created for you, so there is nothing to clean up afterwards.
 **Setup**
 
 One hook script, `~/.local/share/git-timelog/hooks/agent-hook.sh` (installed by
-`install.sh`), works for every supported agent. Print the config for yours and add it to the
-file named in the first line:
+`install.sh`), works for every supported agent. Let git timelog add it to your agent's config:
 
 ```sh
-git timelog agent-setup claude    # ~/.claude/settings.json
-git timelog agent-setup codex     # ~/.codex/hooks.json, then run /hooks in Codex to trust it
-git timelog agent-setup gemini    # ~/.gemini/settings.json
-git timelog agent-setup cursor    # ~/.cursor/hooks.json
+git timelog agent-setup claude --write    # ~/.claude/settings.json
+git timelog agent-setup codex --write     # ~/.codex/hooks.json, then run /hooks in Codex to trust it
+git timelog agent-setup gemini --write    # ~/.gemini/settings.json
+git timelog agent-setup cursor --write    # ~/.cursor/hooks.json
 ```
 
-For example, for Claude Code the output looks like this (the same block repeats for
+`--write` only touches the `hooks` part of the file, keeps everything else, saves a backup next
+to it (`settings.json.git-timelog.bak`), and does nothing if the hooks are already there. It
+refuses to touch a file that isn't valid JSON, or an agent that isn't installed.
+`--remove` takes the hooks out again. Without either flag the command just prints the config,
+so you can add it by hand.
+
+For example, for Claude Code this is what gets added (the same block repeats for
 `UserPromptSubmit`, `Stop` and `SessionEnd`):
 
 ```json
