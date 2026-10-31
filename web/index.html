@@ -126,6 +126,23 @@ a { color: var(--accent); }
 .col .more { width: 100%; margin-top: 2px; font-size: 12px; color: var(--muted); background: none; border-style: dashed; min-height: 32px; }
 .col .more:hover { color: var(--ink); }
 @media (max-width: 900px) { .in-detail { grid-template-columns: 1fr; gap: 16px; } }
+/* global search */
+.search { position: relative; width: min(380px, 100%); }
+.search input { width: 100%; padding-inline-end: 34px; min-height: 36px; }
+.search kbd { position: absolute; inset-inline-end: 10px; top: 50%; translate: 0 -50%; font: 11px/1 ui-monospace, monospace;
+  color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; pointer-events: none; }
+.search input:focus + kbd, .search input:not(:placeholder-shown) + kbd { display: none; }
+#q-results { position: absolute; inset-inline: 0; top: calc(100% + 6px); z-index: 20; list-style: none; margin: 0; padding: 6px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 18px 40px rgba(0,0,0,.4);
+  max-height: 60vh; overflow: auto; min-width: min(460px, calc(100vw - 32px)); }
+#q-results li { padding: 8px 10px; border-radius: 8px; cursor: pointer; display: grid; gap: 2px; }
+#q-results li[aria-selected="true"], #q-results li:hover { background: var(--chip); }
+#q-results .t1 { font-weight: 600; font-size: 13px; display: flex; gap: 8px; align-items: baseline; }
+#q-results .t1 .badge { font-weight: 400; }
+#q-results .t2 { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#q-results mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 2px; }
+#q-results .none { color: var(--muted); font-size: 13px; cursor: default; }
+@media (max-width: 720px) { .search { width: 100%; order: 3; } }
 /* task detail modal */
 .card { cursor: pointer; }
 .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -198,6 +215,12 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
   <header>
     <h1>git timelog <small>task &amp; time tracking for agentic coding</small></h1>
     <div class="spacer"></div>
+    <div class="search" role="search">
+      <input id="q" type="search" placeholder="Search tasks, commits, prompts…" aria-label="Search all tasks"
+        autocomplete="off" aria-controls="q-results" aria-expanded="false" aria-activedescendant="">
+      <kbd aria-hidden="true">/</kbd>
+      <ul id="q-results" role="listbox" hidden></ul>
+    </div>
     <div class="timer" id="timer"><span class="dot"></span><span id="timerLabel">No timer</span>
       <span class="clock" id="timerClock"></span><button id="timerStop" hidden>Stop</button></div>
     <button id="reportBtn">Write standup</button>
@@ -367,6 +390,58 @@ function renderAnalytics(a) {
       <span class="track"><i style="width:${max ? 100 * m.hours / max : 0}%"></i></span>
       <span class="h">${fmtH(m.hours)}</span><span class="p">${share(m.hours, p.hours)}%</span></li>`).join("");
 }
+
+// ---- global search: every project, by name, branch, ticket, commit message or agent prompt ----
+const MATCH_LABEL = {name: "", branch: "branch", ticket: "ticket", note: "note", "agent prompt": "prompt", commit: "commit"};
+let qTimer, qResults = [], qSel = -1;
+function markMatch(text, q) {
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
+  return i < 0 ? esc(text) : esc(text.slice(0, i)) + "<mark>" + esc(text.slice(i, i + q.length)) + "</mark>" + esc(text.slice(i + q.length));
+}
+function renderResults(q) {
+  const ul = $("q-results");
+  ul.hidden = false; $("q").setAttribute("aria-expanded", "true");
+  ul.innerHTML = qResults.length ? qResults.map((r, i) => `<li role="option" id="q-${i}" data-i="${i}" aria-selected="${i === qSel}">
+      <span class="t1">${markMatch(r.title, q)} <span class="badge">${esc(r.project)}</span>
+        <span class="badge">${esc(r.status === "hold" ? "on hold" : r.status)}</span></span>
+      ${r.match.kind !== "name" ? `<span class="t2">${MATCH_LABEL[r.match.kind] || r.match.kind}: ${markMatch(r.match.text, q)}</span>` : ""}</li>`).join("")
+    : `<li class="none" role="option" aria-disabled="true">No tasks, commits or prompts match “${esc(q)}”.</li>`;
+  $("q").setAttribute("aria-activedescendant", qSel >= 0 ? `q-${qSel}` : "");
+}
+function closeResults() { $("q-results").hidden = true; $("q").setAttribute("aria-expanded", "false"); qSel = -1; }
+function pickResult(i) {
+  const r = qResults[i]; if (!r) return;
+  closeResults(); $("q").value = ""; $("q").blur();
+  if (r.project !== project && data.projects.some(p => p.name === r.project)) setProject(r.project);
+  openDetail(r.id);
+}
+$("q").addEventListener("input", () => {
+  clearTimeout(qTimer);
+  const q = $("q").value.trim();
+  if (q.length < 2) return closeResults();
+  qTimer = setTimeout(async () => {
+    try { qResults = await api("/api/search?q=" + encodeURIComponent(q)); } catch (e) { qResults = []; }
+    if ($("q").value.trim() === q) { qSel = qResults.length ? 0 : -1; renderResults(q); }
+  }, 150);
+});
+$("q").addEventListener("keydown", (e) => {
+  if ($("q-results").hidden) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    qSel = Math.max(0, Math.min(qResults.length - 1, qSel + (e.key === "ArrowDown" ? 1 : -1)));
+    renderResults($("q").value.trim());
+  } else if (e.key === "Enter") { e.preventDefault(); pickResult(qSel); }
+  else if (e.key === "Escape") { closeResults(); }
+});
+$("q-results").addEventListener("mousedown", (e) => {  // mousedown: fires before the input loses focus
+  const li = e.target.closest("li[data-i]"); if (li) { e.preventDefault(); pickResult(+li.dataset.i); }
+});
+$("q").addEventListener("blur", () => setTimeout(closeResults, 100));
+document.addEventListener("keydown", (e) => {  // "/" focuses search, like GitHub
+  if (e.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) && !$("detail").open) {
+    e.preventDefault(); $("q").focus();
+  }
+});
 
 // ---- task detail modal: where this task's time came from ----
 let detailId = null, detailOpener = null;

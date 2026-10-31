@@ -82,6 +82,10 @@ Because the command is named `git-timelog`, git exposes it as a subcommand: `git
 - **Board:** todo · doing · on hold · done. Drag cards between columns; hover a card for
   Timer, Log time, Edit (ticket, PR link) and Delete (click twice; Undo appears for a few
   seconds). The done column shows its 8 newest cards, with "Show N more" for the rest.
+- **Search:** press `/` (or click the search box) and type at least two letters. It searches every
+  project at once: task names, branches, tickets, notes, commit messages and the first prompt of
+  each agent session, so "the one where I asked about Safari" finds its task. Arrow keys and Enter
+  open the task, switching to its project tab.
 - **Totals and chart:** hours today, hours this week, active tasks, commits this week, and hours
   per day for the last 14 days.
 - **Activity feed:** recent commits, branch switches and merges.

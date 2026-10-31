@@ -621,6 +621,59 @@ def open_session(sid, dry_run=False):
     return True, f"Opened in {argv[0]}", cmd
 
 
+def search(con, q, limit=20):
+    """Find tasks across all projects by name, branch, ticket, note, commit message or agent prompt.
+
+    Ranked by how deliberate the matching text is: a task's own name, branch or ticket (3),
+    an agent session's first prompt (2), a commit message (1). Deleted tasks and research
+    sessions that now live on a branch's card are left out; their matches go to that card.
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    folded = folded_sessions(con)
+    tasks = {r["id"]: r for r in con.execute("SELECT * FROM tasks WHERE deleted=0")}
+    visible = {tid for tid, t in tasks.items() if not (t["session"] in folded and t["branch"] is None)}
+    by_branch = {(t["repo"], t["branch"]): tid for tid, t in tasks.items() if t["branch"]}
+    hits = {}  # task id -> (score, kind, text)
+
+    def hit(tid, score, kind, text):
+        if tid in visible and (tid not in hits or score > hits[tid][0]):
+            hits[tid] = (score, kind, text)
+    for tid, t in tasks.items():
+        for field, kind in (("title", "name"), ("branch", "branch"), ("ticket", "ticket"), ("note", "note")):
+            if t[field] and q.lower() in t[field].lower():
+                hit(tid, 3 if field != "note" else 2, kind, t[field])
+                break
+    for r in con.execute("SELECT repo, branch, sha, subject FROM events WHERE kind='agent' AND subject LIKE ? ESCAPE '\\'",
+                         ("prompt|" + like,)):
+        title = r["subject"].partition("|")[2]
+        sid = r["sha"]
+        owner = next((tid for tid, t in tasks.items() if t["session"] == sid), None)
+        if sid in folded or owner is None:  # the session worked on a branch: credit that branch's card
+            for e in con.execute("SELECT repo, branch FROM events WHERE kind='agent' AND sha=? ORDER BY ts DESC", (sid,)):
+                if e["branch"] and not is_base(e["branch"]) and (e["repo"], e["branch"]) in by_branch:
+                    owner = by_branch[(e["repo"], e["branch"])]
+                    break
+        if owner is not None:
+            hit(owner, 2, "agent prompt", title)
+    for r in con.execute("SELECT repo, branch, subject FROM events WHERE kind='commit' AND subject LIKE ? ESCAPE '\\' "
+                         "ORDER BY ts DESC", (like,)):
+        tid = by_branch.get((r["repo"], r["branch"]))
+        if tid is not None:
+            hit(tid, 1, "commit", r["subject"])
+    table = projects()
+    out = []
+    for tid, (score, kind, text) in hits.items():
+        t = tasks[tid]
+        out.append({"id": tid, "title": t["title"], "repo": t["repo"], "branch": t["branch"], "status": t["status"],
+                    "project": project_of(t["repo"], table), "match": {"kind": kind, "text": text},
+                    "score": score, "updated": t["updated"] or 0})
+    out.sort(key=lambda r: (-r["score"], -r["updated"]))
+    return out[:limit]
+
+
 def task_detail(con, tid, max_commits=50, max_sessions=20):
     """Where a task's time came from: totals per source, agent sessions, commits, manual entries."""
     ingest(con)
@@ -1035,6 +1088,10 @@ class Handler(BaseHTTPRequestHandler):
             p = self.path.split("?")[0]
             if method == "GET" and p in ("/", "/index.html"):
                 return self.send(200, (web_dir() / "index.html").read_bytes(), "text/html; charset=utf-8")
+            if method == "GET" and p == "/api/search":
+                from urllib.parse import parse_qs, urlparse
+                ingest(con)
+                return self.send(200, search(con, parse_qs(urlparse(self.path).query).get("q", [""])[0]))
             if method == "GET" and p == "/api/summary":
                 return self.send(200, summary(con))
             if method == "POST" and p == "/api/task":

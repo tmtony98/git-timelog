@@ -596,6 +596,39 @@ class CliTest(unittest.TestCase):
         self.assertGreater(a["4w"]["hours"], 0)
         self.assertEqual(a["week"]["hours"], 0)
 
+    def search(self, q):
+        code = (
+            "import importlib.machinery, importlib.util, json, sys;"
+            f"l = importlib.machinery.SourceFileLoader('gtl', {str(CLI)!r});"
+            "s = importlib.util.spec_from_loader('gtl', l); m = importlib.util.module_from_spec(s);"
+            f"l.exec_module(m); c = m.db(); m.ingest(c); print(json.dumps(m.search(c, {q!r})))"
+        )
+        out = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_search_finds_tasks_by_name_commit_and_agent_prompt(self):
+        self.tl("init", "--days", "0")
+        self.git_event(0, "commit", "feat/cart", "feat: round tax per line")
+        self.agent(100, "main", "s-1", "prompt|why is the badge empty on Safari")
+        self.agent(400, "main", "s-1", "stop")
+        self.git_event(500, "checkout", "fix/badge", "from:main")
+        self.agent(600, "fix/badge", "s-1", "prompt")          # the session moved onto fix/badge
+        self.agent(900, "fix/badge", "s-1", "stop")
+        self.tl("add", "Tax workshop with finance")
+        by = lambda q: [(r["title"], r["match"]["kind"]) for r in self.search(q)]
+        self.assertEqual(by("tax"), [("Tax workshop with finance", "name"), ("feat/cart", "commit")])  # name outranks commit
+        self.assertEqual(by("safari"), [("fix/badge", "agent prompt")])  # credited to the branch it moved to
+        self.assertEqual(by("x"), [])                                     # too short to search
+
+    def test_search_skips_deleted_tasks_and_treats_wildcards_literally(self):
+        self.tl("init", "--days", "0")
+        self.git_event(0, "commit", "feat/a", "feat: 100% coverage")
+        self.git_event(60, "commit", "feat/b", "feat: 100 percent")
+        self.summary()
+        self.assertEqual([r["title"] for r in self.search("100%")], ["feat/a"])
+        self.tl("delete", "feat/a")
+        self.assertEqual(self.search("100%"), [])
+
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")
         self.tl("add", "Sprint planning")
