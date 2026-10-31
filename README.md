@@ -2,16 +2,9 @@
 
 **Task and time tracking for agentic coding. You never press start.**
 
-Every coding-agent session and every git branch becomes a task, with its hours filled in for you.
-
-- **Ask your agent something** (Claude Code, Codex, Gemini CLI or Cursor) and the task starts,
-  named after your first prompt.
-- **It creates a branch**, and the work, plus the research before it, lands on that branch's card.
-- **The PR merges**, and the task moves to done. Click any card to see where its time went and
-  to **reopen its Claude Code session** in one click.
-
-A local dashboard shows every project, task and hour, and your daily standup note is written
-for you. It runs on your machine: no account, no cloud, nothing to `pip install`.
+You juggle three features, a bug and a review, each with its own Claude Code conversation.
+git timelog keeps every one of them on a card, with its hours, its commits and a button that
+drops you straight back into that conversation.
 
 [![Watch the 30-second launch video](docs/launch-video.jpg)](https://github.com/tmtony98/git-timelog/releases/download/v0.7.0/git-timelog-launch.mp4)
 
@@ -19,33 +12,40 @@ for you. It runs on your machine: no account, no cloud, nothing to `pip install`
 
 ![The dashboard: project tabs, totals, a board with an agent-session card, an idle branch on hold, and "Where the time went" below it](docs/dashboard.jpg)
 
-## Purpose
+## Sound familiar?
 
-**git timelog answers one question for developers who code with AI agents: where did my time
-go, and on what?**
+Coding with agents is fast. Keeping track of it isn't.
 
-Coding agents changed how work happens. A task now starts with a conversation (you ask, read
-code with the agent, try an idea) and only later becomes a branch, if it ever does. Between
-prompts you review diffs, test, and steer. Classic time trackers miss all of it, because they
-depend on you pressing start, and nobody does. Git alone misses it too: it only sees commits.
+- **"Which session was that fix in?"** You're pulled off a feature for an urgent bug. Two days
+  later you come back and can't find the conversation where you and the agent had it half
+  solved, so you explain everything again from scratch.
+- **"What did I do yesterday?"** Standup starts in two minutes and you're scrolling git log and
+  chat history to rebuild your day.
+- **"How long did that take?"** Someone asks for an estimate, or a client needs hours. Your
+  time tracker says zero, because you never pressed start. Nobody does.
+- **"Did the agent actually save me time?"** You can't tell how much was the agent working and
+  how much was you reading its output, testing and re-prompting.
+- **"Where did the research go?"** An hour of asking questions and reading code before you
+  even created a branch, and it's on no timesheet anywhere.
+- **"Is this ticket still open?"** The board is out of date the moment a PR merges, because
+  someone has to move the card.
 
-Your agent and your repo already record what you worked on and when. git timelog reads both
-and turns them into tasks with honest hours, so that you can:
+## What git timelog does about it
 
-- **Give a real standup** without reconstructing yesterday from memory: it's written for you.
-- **See what your agent work actually costs:** how much time the agent spent working, and how
-  much was you reading, testing and prompting between its replies.
-- **Know what kind of work filled the week:** features, fixes, chores, or exploring with an
-  agent.
-- **Estimate the next task, or bill a client,** from hours per task instead of guesses.
-- **Pick up where you left off:** every task lists its agent sessions, and one click reopens a
-  Claude Code or Codex conversation.
+| The pain | What happens instead |
+|---|---|
+| Losing your place when you switch tasks | Every task card lists its agent sessions. **Open in Claude Code** (or Codex) reopens that exact conversation, in the right folder, in a new terminal. Switch features freely and pick each one up mid-thought. |
+| Rebuilding your day for standup | A standup note is written for you: what you committed, hours per task, what's in progress and on hold. |
+| Time trackers you forget to start | Your agent's hooks and git already record when you work. Hours fill themselves in, per task. |
+| Not knowing what the agent really costs | **Where the time went** splits your hours into *agent working*, *you, between prompts* and *git only*, plus what kind of work it was: features, fixes, chores, exploring. |
+| Research that vanishes | A session that starts with a question is a task from its first prompt. When it turns into a branch, the research time comes with it. |
+| A board nobody updates | Merged PRs move to done by themselves (merge, squash, rebase or fast-forward). Branches you've left alone go on hold, and coming back reopens them. |
 
-**It's for you, not about you.** git timelog is a personal tool: it runs on your machine, keeps
-its data in one local file, needs no account, and sends nothing anywhere. It isn't built for
-monitoring anyone. You decide what to share, for example your standup note.
+**It's for you, not about you.** git timelog runs on your machine, keeps its data in one local
+file, needs no account and sends nothing anywhere. It isn't built for monitoring anyone. You
+decide what to share, for example your standup note.
 
-**How it works, in short:**
+## How it works, in short
 
 - **Zero effort.** Agent hooks record each session's prompts and turns; git hooks record branch
   switches, commits and merges. Nothing to start or stop.
