@@ -157,6 +157,12 @@ only then create a branch. git timelog tracks the session itself, so that time i
 
 No branch is ever created for you, so there is nothing to clean up afterwards.
 
+**Resume a session from its card.** Click a card to see its sessions. For Claude Code and Codex
+sessions the panel has a **Copy resume command** button, e.g.
+`cd ~/code/shop && claude --resume <session-id>` or `codex resume <session-id>`, so you can pick
+up exactly where that conversation left off. Gemini CLI resumes by list position and Cursor
+conversations can't be resumed from a shell, so those get a copyable session id only.
+
 **How session time is counted**
 
 - While the agent is working on your request, the time counts, even a 40 minute run (up to
@@ -198,7 +204,8 @@ For example, for Claude Code this is what gets added (the same block repeats for
 
 **What the hook writes down, and what it doesn't**
 
-- For each event: the time, the session id, the repo and the current branch. For the session's
+- For each event: the time, the session id, which agent it was, the folder it ran in, the repo and
+  the current branch. For the session's
   first prompt, also its first 80 characters, used as the card title. Nothing else from the
   conversation.
 - Only sessions inside repos you track, or folder names listed under `[projects]`, are written

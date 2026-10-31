@@ -4,13 +4,21 @@
 # and appends one line to the event log. Never blocks the agent. Needs jq.
 data="${GIT_TIMELOG_HOME:-$HOME/.local/share/git-timelog}"
 {
-  # one jq call reads everything we need (tabs/newlines in the prompt become spaces)
-  IFS=$'\t' read -r ev sid cwd title < <(jq -r '[
+  # One jq call reads everything we need. Fields are joined with the unit separator, not tabs,
+  # so an empty field can't shift the others; tabs/newlines in the prompt become spaces.
+  IFS=$'\x1f' read -r ev sid cwd agent title < <(jq -r '[
       .hook_event_name // "",
       (.session_id // .conversation_id // ""),
       (.cwd // .workspace_roots[0] // ""),
+      # which agent sent this: needed to offer the right resume command later
+      (if .conversation_id then "cursor"
+       elif (.hook_event_name == "BeforeAgent" or .hook_event_name == "AfterAgent") then "gemini"
+       elif ((.transcript_path // "") | test("/\\.codex/")) or .turn_id then "codex"
+       elif ((.transcript_path // "") | test("/\\.gemini/")) then "gemini"
+       elif ((.transcript_path // "") | test("/\\.claude/")) then "claude"
+       else "" end),
       ((.prompt // "") | gsub("[\t\r\n ]+"; " ") | ltrimstr(" ") | .[0:80] | rtrimstr(" "))
-    ] | @tsv')
+    ] | map(gsub("\u001f"; " ")) | join("\u001f")')
   case "$ev" in
     SessionStart|sessionStart) what=start ;;
     UserPromptSubmit|BeforeAgent|beforeSubmitPrompt) what=prompt ;;
@@ -35,7 +43,8 @@ data="${GIT_TIMELOG_HOME:-$HOME/.local/share/git-timelog}"
         what="prompt|$title"
       fi
       mkdir -p "$data"
-      printf '%s\tagent\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$repo" "$branch" "$sid" "$what" >> "$data/events.log"
+      printf '%s\tagent\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$repo" "$branch" "$sid" "$what" \
+        "$agent" "${cwd//$'\t'/ }" >> "$data/events.log"
     fi
   fi
 } < <(cat) 2>/dev/null

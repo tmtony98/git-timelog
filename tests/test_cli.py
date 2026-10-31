@@ -323,6 +323,30 @@ class CliTest(unittest.TestCase):
                              "cwd": str(self.repo), "prompt": "tracked work"})
         self.assertIn("prompt|tracked work", self.logged())
 
+    def test_detail_offers_resume_commands_for_claude_and_codex(self):
+        self.tl("init", "--days", "0")
+        repo = str(self.repo)
+        for sid, extra in (("c-1111", {"transcript_path": "/home/u/.claude/projects/x/c-1111.jsonl"}),
+                           ("x-2222", {"transcript_path": "/home/u/.codex/sessions/x-2222.jsonl", "turn_id": "t"}),
+                           ("g-3333", {})):
+            ev = "BeforeAgent" if sid.startswith("g") else "UserPromptSubmit"
+            self.run_agent_hook({"hook_event_name": ev, "session_id": sid, "cwd": repo, "prompt": sid, **extra})
+        by = {}
+        for t in self.summary()["tasks"]:
+            for s in self.detail(t["id"])["sessions"]:
+                by[s["id"]] = s
+        self.assertEqual(by["c-1111"]["agent"], "claude")
+        self.assertEqual(by["c-1111"]["resume"], f"cd {repo} && claude --resume c-1111")
+        self.assertEqual(by["x-2222"]["resume"], f"cd {repo} && codex resume x-2222")
+        self.assertEqual((by["g-3333"]["agent"], by["g-3333"]["resume"]), ("gemini", None))
+
+    def test_six_column_log_lines_from_older_hooks_still_load(self):
+        self.tl("init", "--days", "0")
+        self.agent(0, "main", "old-1", "prompt|from an older hook")  # writes the six-column format
+        t = next(t for t in self.summary()["tasks"] if t["session"] == "old-1")
+        (s,) = self.detail(t["id"])["sessions"]
+        self.assertEqual((s["agent"], s["resume"]), (None, None))
+
     def test_agent_titles_off_keeps_prompt_text_out_of_the_log(self):
         Path(self.env["GIT_TIMELOG_CONFIG"]).write_text("[git-timelog]\nagent_titles = off\n")
         self.tl("init", "--days", "0")
@@ -336,7 +360,7 @@ class CliTest(unittest.TestCase):
         self.tl("init", "--days", "0")
         self.run_agent_hook({"hook_event_name": "UserPromptSubmit", "session_id": "l1", "cwd": str(self.repo),
                              "prompt": "  fix\tthe   cart\n\nbadge " + "x" * 200})
-        title = self.logged().strip().split("\t")[-1]
+        title = self.logged().strip().split("\t")[5]  # columns: ts kind repo branch session subject agent cwd
         self.assertTrue(title.startswith("prompt|fix the cart badge x"))
         self.assertEqual(len(title), len("prompt|") + 80)
 

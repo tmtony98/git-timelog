@@ -14,6 +14,7 @@ import json
 import os
 import random
 import re
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -164,6 +165,11 @@ def db():
     if "deleted" not in [r[1] for r in con.execute("PRAGMA table_info(tasks)")]:
         # deleted tasks stay in the table (so the branch isn't re-created) but are hidden everywhere
         con.execute("ALTER TABLE tasks ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+    if "agent" not in [r[1] for r in con.execute("PRAGMA table_info(events)")]:
+        # coding-agent events: which agent (claude, codex, gemini, cursor) and the folder it ran in,
+        # so a session can be resumed later
+        con.execute("ALTER TABLE events ADD COLUMN agent TEXT")
+        con.execute("ALTER TABLE events ADD COLUMN cwd TEXT")
     if "session" not in [r[1] for r in con.execute("PRAGMA table_info(tasks)")]:
         # coding-agent session id, for sessions that never left a base branch (research tasks)
         con.execute("ALTER TABLE tasks ADD COLUMN session TEXT")
@@ -215,7 +221,7 @@ def sync_hook_files():
         flag.unlink()
 
 
-def add_agent_event(con, ts, repo, branch, sid, subject, live):
+def add_agent_event(con, ts, repo, branch, sid, subject, live, agent="", cwd=""):
     """A coding-agent session event (start, prompt, stop, end) from hooks/agent-hook.sh.
 
     The session itself is the task until it touches a feature branch: on a base
@@ -225,7 +231,8 @@ def add_agent_event(con, ts, repo, branch, sid, subject, live):
     """
     if repo not in known_repos():
         return  # sessions in folders we don't track
-    con.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?)", (ts, "agent", repo, branch, sid, subject))
+    con.execute("INSERT OR IGNORE INTO events(ts, kind, repo, branch, sha, subject, agent, cwd) VALUES(?,?,?,?,?,?,?,?)",
+                (ts, "agent", repo, branch, sid, subject, agent or None, cwd or None))
     what, _, title = subject.partition("|")
     if branch and not is_base(branch):
         ensure_task(con, repo, branch, ts)
@@ -247,10 +254,10 @@ def add_agent_event(con, ts, repo, branch, sid, subject, live):
                         "AND status IN ('done', 'hold')", (ts, ts, row["id"]))
 
 
-def add_event(con, ts, kind, repo, branch, sha, subject, live=False):
+def add_event(con, ts, kind, repo, branch, sha, subject, live=False, agent="", cwd=""):
     if kind == "agent":
-        return add_agent_event(con, ts, repo, branch, sha, subject, live)
-    con.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?,?,?)",
+        return add_agent_event(con, ts, repo, branch, sha, subject, live, agent, cwd)
+    con.execute("INSERT OR IGNORE INTO events(ts, kind, repo, branch, sha, subject) VALUES(?,?,?,?,?,?)",
                 (ts, kind, repo, branch, sha, subject))
     ensure_task(con, repo, branch, ts)
     if kind == "checkout" and subject.startswith("from:"):
@@ -292,7 +299,8 @@ def ingest(con):
             if len(parts) < 6:
                 continue
             ts, kind, repo, branch, sha, subject = parts[:6]
-            add_event(con, int(ts), kind, repo, branch, sha, subject, live=True)
+            agent, cwd = (parts[6:8] + ["", ""])[:2]  # older hook versions wrote six columns
+            add_event(con, int(ts), kind, repo, branch, sha, subject, live=True, agent=agent, cwd=cwd)
             n += 1
     con.execute("INSERT OR REPLACE INTO meta VALUES('offset', ?)", (str(offset),))
     row = con.execute("SELECT v FROM meta WHERE k='merged_check'").fetchone()
@@ -515,6 +523,14 @@ def agent_intervals(con, tasks, gap, with_session=False):
     return out
 
 
+def resume_command(agent, sid, cwd):
+    """Shell command that reopens an agent session, for agents that can resume by id."""
+    run = {"claude": f"claude --resume {sid}", "codex": f"codex resume {sid}"}.get(agent)
+    if not run:
+        return None  # Gemini CLI resumes by list position, Cursor conversations can't be resumed from a shell
+    return f"cd {shlex.quote(cwd)} && {run}" if cwd else run
+
+
 def task_detail(con, tid, max_commits=50, max_sessions=20):
     """Where a task's time came from: totals per source, agent sessions, commits, manual entries."""
     ingest(con)
@@ -538,11 +554,15 @@ def task_detail(con, tid, max_commits=50, max_sessions=20):
     titles_on = C["agent_titles"].strip().lower() != "off"
     sessions = []
     for sid in sids:
-        evs = con.execute("SELECT ts, subject FROM events WHERE kind='agent' AND sha=? ORDER BY ts", (sid,)).fetchall()
+        evs = con.execute("SELECT ts, subject, agent, cwd FROM events WHERE kind='agent' AND sha=? ORDER BY ts",
+                          (sid,)).fetchall()
         if not evs:
             continue
         title = next((e["subject"].partition("|")[2] for e in evs if e["subject"].partition("|")[2]), None)
-        sessions.append({"id": sid, "start": evs[0]["ts"], "end": evs[-1]["ts"],
+        agent = next((e["agent"] for e in evs if e["agent"]), None)
+        cwd = next((e["cwd"] for e in evs if e["cwd"]), None)
+        sessions.append({"id": sid, "agent": agent, "cwd": cwd, "resume": resume_command(agent, sid, cwd),
+                         "start": evs[0]["ts"], "end": evs[-1]["ts"],
                          "turns": sum(1 for e in evs if e["subject"].startswith("prompt")),
                          "seconds": secs([iv for iv in agent_iv if iv[4] == sid]),
                          "ended": evs[-1]["subject"] == "end", "title": title if titles_on else None})
