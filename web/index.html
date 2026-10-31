@@ -77,6 +77,29 @@ a { color: var(--accent); }
 .tablewrap { overflow-x: auto; }
 .addrow { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .addrow input { flex: 1; min-width: 180px; }
+/* "where the time went" analytics */
+.in-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.in-head h2 { margin: 0; flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: none; padding: 5px 12px; font-size: 12px; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--chip); color: var(--ink); font-weight: 600; }
+.in-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 26px; }
+.in-grid h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 10px 0 10px; font-weight: 600; }
+.mixbar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--chip); margin-bottom: 10px; }
+.mixbar span { display: block; height: 100%; }
+.rows { list-style: none; margin: 0; padding: 0; }
+.rows li { display: grid; grid-template-columns: 12px 1fr auto auto; gap: 8px; align-items: center; padding: 5px 0; font-size: 13px; }
+.rows li .dot { width: 10px; height: 10px; border-radius: 3px; }
+.rows li .v { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.rows li .p { color: var(--muted); font-size: 12px; min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+.rows li .bar { grid-column: 2 / -1; height: 4px; border-radius: 2px; background: var(--chip); overflow: hidden; }
+.rows li .bar i { display: block; height: 100%; }
+.rows .empty { display: block; color: var(--muted); }
+.focus { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.focus b { color: var(--ink); font-size: 20px; font-variant-numeric: tabular-nums; }
+.col .more { width: 100%; margin-top: 2px; font-size: 12px; color: var(--muted); background: none; border-style: dashed; }
+.col .more:hover { color: var(--ink); }
+@media (max-width: 900px) { .in-grid { grid-template-columns: 1fr; gap: 6px; } }
 /* task detail modal */
 .card { cursor: pointer; }
 .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -181,6 +204,18 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
     </section>
   </div>
 
+  <section class="panel" id="insights" style="margin-top:20px">
+    <div class="in-head"><h2>Where the time went</h2>
+      <div class="seg" role="group" aria-label="Period">
+        <button data-period="week">This week</button><button data-period="4w">Last 4 weeks</button></div></div>
+    <div class="in-grid">
+      <div><h3>Work mix</h3><div id="in-mixbar" class="mixbar"></div><ul id="in-mix" class="rows"></ul></div>
+      <div><h3>Agent vs you</h3><ul id="in-split" class="rows"></ul></div>
+      <div><h3>Agents</h3><ul id="in-agents" class="rows"></ul>
+        <h3 style="margin-top:18px">Focus</h3><div id="in-focus" class="focus"></div></div>
+    </div>
+  </section>
+
   <section class="panel" style="margin-top:20px">
     <h2 id="tableTitle">All tasks</h2>
     <div class="tablewrap"><table id="table"></table></div>
@@ -193,7 +228,9 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
 const STATUSES = ["todo", "doing", "hold", "done"];
 const LABELS = {todo: "todo", doing: "doing", hold: "on hold", done: "done"};
 const COLORS = Array.from({length: 8}, (_, i) => `var(--c${i})`);
-let data = null;   // full summary from the server
+let data = null;
+const DONE_CAP = 8;       // done cards shown before "Show N more"
+let doneOpen = false;   // full summary from the server
 let view = null;   // the selected project's slice of it
 let project = null;
 const ALL = "All projects";
@@ -232,6 +269,43 @@ function toast(msg, actionLabel, action) {
 async function load() {
   data = await api("/api/summary"); pickProject(); render();
   if ($("detail").open && detailId) openDetail(detailId);  // keep an open modal current
+}
+
+// ---- "where the time went" analytics ----
+const TYPE_INFO = {feat: ["Features", "var(--c0)"], fix: ["Fixes", "var(--c2)"], refactor: ["Refactors", "var(--c3)"],
+  chore: ["Chores", "var(--c7)"], docs: ["Docs", "var(--c1)"], test: ["Tests", "var(--c4)"],
+  explore: ["Exploring with an agent", "var(--c5)"], other: ["Other", "var(--muted)"]};
+const SPLIT_INFO = [["agent", "Agent working", "var(--accent)"], ["you", "Your turn (between prompts)", "var(--c1)"],
+  ["git", "Git activity only", "var(--c3)"], ["logged", "Timer & logged", "var(--c4)"]];
+let period = "week";
+try { period = localStorage.getItem("git-timelog.period") || "week"; } catch (e) {}
+const pct = (v, total) => total ? Math.round(100 * v / total) + "%" : "–";
+function row(color, label, hours, total, extra) {
+  return `<li><span class="dot" style="background:${color}"></span><span>${label}</span><span class="v">${fmtH(hours)}</span>
+    <span class="p">${extra ?? pct(hours, total)}</span><span class="bar"><i style="width:${total ? 100 * hours / total : 0}%;background:${color}"></i></span></li>`;
+}
+function renderAnalytics(a) {
+  document.querySelectorAll("#insights [data-period]").forEach(b => {
+    b.setAttribute("aria-pressed", b.dataset.period === period);
+    b.onclick = () => { period = b.dataset.period; try { localStorage.setItem("git-timelog.period", period); } catch (e) {} renderAnalytics(a); };
+  });
+  const p = a && a[period];
+  if (!p || !p.hours) {
+    ["in-mix", "in-split", "in-agents"].forEach(id => $(id).innerHTML = `<li class="empty">No tracked time in this period.</li>`);
+    $("in-mixbar").innerHTML = ""; $("in-focus").textContent = "";
+    return;
+  }
+  $("in-mixbar").innerHTML = p.mix.map(m => `<span title="${TYPE_INFO[m.type][0]}: ${fmtH(m.hours)}" style="width:${100 * m.hours / p.hours}%;background:${TYPE_INFO[m.type][1]}"></span>`).join("");
+  $("in-mix").innerHTML = p.mix.map(m => row(TYPE_INFO[m.type][1], `${TYPE_INFO[m.type][0]} <span class="p">· ${m.tasks} task${m.tasks === 1 ? "" : "s"}</span>`, m.hours, p.hours)).join("");
+  $("in-split").innerHTML = SPLIT_INFO.filter(([k]) => p.split[k] > 0).map(([k, l, c]) => row(c, l, p.split[k], p.hours)).join("");
+  const agentTotal = p.agents.reduce((n, g) => n + g.hours, 0);
+  $("in-agents").innerHTML = p.agents.length
+    ? p.agents.map(g => row("var(--accent)", AGENT_NAMES[g.agent] || "Unknown agent", g.hours, agentTotal, `${g.sessions} session${g.sessions === 1 ? "" : "s"}`)).join("")
+    : `<li class="empty">No agent sessions in this period.</li>`;
+  const f = p.focus;
+  $("in-focus").innerHTML = f.days
+    ? `<b>${f.median_tasks}</b> task${f.median_tasks === 1 ? "" : "s"} on a typical day · ${f.days} active day${f.days === 1 ? "" : "s"}${f.days_over_3 ? ` · <span style="color:var(--warn)">${f.days_over_3} day${f.days_over_3 === 1 ? "" : "s"} juggling more than 3</span>` : ""}`
+    : "";
 }
 
 // ---- task detail modal: where this task's time came from ----
@@ -332,7 +406,7 @@ function slice() {
   const tasks = data.tasks.filter(t => t.project === project);
   const ids = new Set(tasks.map(t => String(t.id)));
   return {
-    ...data, kpi: p.kpi, repos: p.repos, tasks,
+    ...data, kpi: p.kpi, analytics: p.analytics, repos: p.repos, tasks,
     days: data.days.map(d => ({date: d.date, tasks: Object.fromEntries(Object.entries(d.tasks).filter(([id]) => ids.has(id)))})),
     activity: data.activity.filter(e => e.project === project),
   };
@@ -370,9 +444,12 @@ function render() {
 
   $("board").innerHTML = STATUSES.map(s => {
     const items = data.tasks.filter(t => t.status === s);
-    const shown = s === "done" ? items.slice(0, 8) : items;
+    const capped = s === "done" && !doneOpen && items.length > DONE_CAP;
+    const shown = capped ? items.slice(0, DONE_CAP) : items;
+    const more = s === "done" && items.length > DONE_CAP
+      ? `<button class="more" data-more aria-expanded="${doneOpen}">${doneOpen ? "Show fewer" : `Show ${items.length - DONE_CAP} more`}</button>` : "";
     return `<div class="col" data-status="${s}"><h3><span>${LABELS[s]}</span><span>${items.length}</span></h3>
-      ${shown.map(card).join("")}</div>`;
+      ${shown.map(card).join("")}${more}</div>`;
   }).join("");
 
   // stacked bars
@@ -409,6 +486,8 @@ function render() {
       <td class="n">${t.hours.toFixed(1)}</td><td class="n">${t.commits}</td><td>${ago(t.last)}</td>
       <td>${t.ticket ? `<span class="badge">${esc(t.ticket)}</span> ` : ""}${t.pr_url ? `<a href="${esc(t.pr_url)}" target="_blank" rel="noopener">PR</a>` : ""}</td></tr>`).join("");
 
+  $("board").querySelectorAll("[data-more]").forEach(b => b.onclick = () => { doneOpen = !doneOpen; render(); });
+  renderAnalytics(view.analytics);
   renderTimer();
   bindDnD();
 }

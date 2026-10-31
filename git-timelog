@@ -520,7 +520,8 @@ def agent_intervals(con, tasks, gap, with_session=False):
             a, b = evs[i - 1], evs[i]
             limit = gap if a["subject"].startswith("prompt") else think
             if target[i] and 0 <= b["ts"] - a["ts"] < limit:
-                out.append((target[i], a["ts"], b["ts"], "agent") + ((sid,) if with_session else ()))
+                kind = "run" if a["subject"].startswith("prompt") else "turn"  # agent working vs your turn
+                out.append((target[i], a["ts"], b["ts"], "agent") + ((sid, kind) if with_session else ()))
     return out
 
 
@@ -688,7 +689,13 @@ def summary(con):
     folded = folded_sessions(con)
     hidden = {r["id"] for r in con.execute("SELECT id, session, branch, deleted FROM tasks")
               if r["deleted"] or (r["session"] in folded and r["branch"] is None)}
-    for tid, s, e, _ in intervals(con):
+    tmap = {(r["repo"], r["branch"]): r["id"] for r in con.execute("SELECT id, repo, branch FROM tasks")}
+    git_iv = git_intervals(con, tmap)
+    agent_iv = agent_intervals(con, tmap, int(C["session_gap_min"]) * 60, with_session=True)
+    entry_iv = [(r["task_id"], r["start"], r["end"], r["source"]) for r in con.execute(
+        "SELECT task_id, start, COALESCE(end, ?) AS end, source FROM entries", (now(),))]
+    # same as intervals(): git and agent time merged, timer/logged time on top
+    for tid, s, e, _ in union(git_iv + [iv[:4] for iv in agent_iv]) + entry_iv:
         if tid in hidden:
             continue
         sec = max(0, e - s)
@@ -699,9 +706,15 @@ def summary(con):
     commits = {r["id"]: dict(r) for r in con.execute(
         "SELECT t.id, COUNT(*) n, MAX(e.ts) last FROM events e "
         "JOIN tasks t ON t.repo=e.repo AND t.branch=e.branch WHERE e.kind='commit' GROUP BY t.id")}
-    last_subject = {r["id"]: r["subject"] for r in con.execute(
-        "SELECT t.id, e.subject FROM events e JOIN tasks t ON t.repo=e.repo AND t.branch=e.branch "
-        "WHERE e.kind='commit' ORDER BY e.ts")}
+    last_subject, commit_types = {}, {}
+    for r in con.execute("SELECT t.id, e.subject FROM events e JOIN tasks t ON t.repo=e.repo AND t.branch=e.branch "
+                         "WHERE e.kind='commit' ORDER BY e.ts"):
+        last_subject[r["id"]] = r["subject"]
+        m = re.match(r"(\w+)(\([^)]*\))?!?:", r["subject"] or "")
+        if m and m.group(1).lower() in WORK_TYPES:
+            ct = commit_types.setdefault(r["id"], {})
+            kind = WORK_TYPES[m.group(1).lower()]
+            ct[kind] = ct.get(kind, 0) + 1
     tasks = []
     for t in con.execute(f"SELECT *, ({LAST_SEEN}) AS last_seen FROM tasks WHERE deleted=0 ORDER BY updated DESC"):
         if t["id"] in hidden:
@@ -746,16 +759,107 @@ def summary(con):
                for n in names}
     timer = con.execute("SELECT e.*, t.title FROM entries e JOIN tasks t ON t.id=e.task_id "
                         "WHERE e.end IS NULL").fetchone()
+    for t in tasks:
+        t["type"] = work_type(t["branch"], t["session"], commit_types.get(t["id"]))
+    session_agent = {r[0]: r[1] for r in con.execute(
+        "SELECT sha, MAX(agent) FROM events WHERE kind='agent' GROUP BY sha")}
+    week_from = int(dt.datetime.combine(week_start, dt.time()).timestamp())
+    periods = {"week": week_from, "4w": now() - 28 * 86400}
+
+    def analytics(project=None):
+        mine = {t["id"]: t["type"] for t in tasks if project is None or t["project"] == project}
+        return {k: period_analytics(since, mine, git_iv, agent_iv, entry_iv, per_day, session_agent)
+                for k, since in periods.items()}
+
     return {
         "title": C["title"], "version": __version__,
-        "kpi": kpi(),
-        "projects": [{"name": n, "repos": members[n], "kpi": kpi(n)} for n in names],
+        "kpi": kpi(), "analytics": analytics(),
+        "projects": [{"name": n, "repos": members[n], "kpi": kpi(n), "analytics": analytics(n)} for n in names],
         "repos": sorted(tracked | {t["repo"] for t in tasks if t["repo"]}),
         "tasks": tasks, "days": days,
         "activity": [{**dict(r), "project": project_of(r["repo"], table)}
                      for r in con.execute("SELECT * FROM events WHERE kind != 'agent' ORDER BY ts DESC LIMIT 300")],
         "timer": dict(timer) if timer else None,
     }
+
+
+# ---------------------------------------------------------------- analytics
+
+# Branch prefixes and conventional-commit types, folded into the work types we report.
+WORK_TYPES = {"feat": "feat", "feature": "feat", "fix": "fix", "bugfix": "fix", "hotfix": "fix",
+              "refactor": "refactor", "perf": "refactor", "chore": "chore", "ci": "chore", "build": "chore",
+              "docs": "docs", "doc": "docs", "test": "test", "tests": "test"}
+
+
+def work_type(branch, session, commit_types):
+    """What kind of work a task is: from its branch prefix, else its commits' conventional type.
+
+    Agent sessions that never reached a branch are "explore"; anything else is "other".
+    """
+    if branch:
+        m = re.match(r"(?i)([a-z]+)[/_-]", branch)
+        if m and m.group(1).lower() in WORK_TYPES:
+            return WORK_TYPES[m.group(1).lower()]
+        if commit_types:
+            return max(sorted(commit_types), key=lambda k: commit_types[k])
+        return "other"
+    return "explore" if session else "other"
+
+
+SPLIT_ORDER = ("agent", "you", "git")  # when sources overlap, the earlier bucket wins the second
+
+
+def period_analytics(since, task_types, git_iv, agent_iv, entry_iv, per_day, session_agent):
+    """Where the time went since `since`, for the tasks in task_types ({task_id: type}).
+
+    Every second is counted once: overlapping git activity and agent turns are swept
+    into one bucket (agent working > your turn > git), and timer/logged time is added on
+    top, exactly as the task hours are, so split and mix both add up to `hours`.
+    """
+    per_task = {}
+    for tid, a, b, _ in git_iv:
+        if tid in task_types and a >= since:
+            per_task.setdefault(tid, []).append((a, b, 2))
+    for tid, a, b, _, _, kind in agent_iv:
+        if tid in task_types and a >= since:
+            per_task.setdefault(tid, []).append((a, b, 0 if kind == "run" else 1))
+    split = {"agent": 0, "you": 0, "git": 0, "logged": 0}
+    task_secs = {}
+    for tid, ivs in per_task.items():
+        points = sorted({p for a, b, _ in ivs for p in (a, b)})
+        for p0, p1 in zip(points, points[1:]):
+            ranks = [r for a, b, r in ivs if a <= p0 and b >= p1]
+            if ranks:
+                split[SPLIT_ORDER[min(ranks)]] += p1 - p0
+                task_secs[tid] = task_secs.get(tid, 0) + p1 - p0
+    for tid, a, b, _ in entry_iv:
+        if tid in task_types and a >= since:
+            split["logged"] += max(0, b - a)
+            task_secs[tid] = task_secs.get(tid, 0) + max(0, b - a)
+    mix = {}
+    for tid, sec in task_secs.items():
+        m = mix.setdefault(task_types[tid], {"type": task_types[tid], "seconds": 0, "tasks": 0})
+        m["seconds"] += sec
+        m["tasks"] += 1
+    agents = {}
+    for tid, a, b, _, sid, _ in agent_iv:
+        if tid in task_types and a >= since:
+            g = agents.setdefault(session_agent.get(sid) or "unknown", {"seconds": 0, "sessions": set()})
+            g["seconds"] += b - a
+            g["sessions"].add(sid)
+    since_day = dt.date.fromtimestamp(since)
+    daily = [sum(1 for tid, sec in v.items() if tid in task_types and sec >= 600)
+             for d, v in per_day.items() if d >= since_day]
+    daily = sorted(n for n in daily if n)
+    h = lambda sec: round(sec / 3600, 2)
+    return {"from": since, "hours": h(sum(task_secs.values())),
+            "mix": sorted(({"type": m["type"], "hours": h(m["seconds"]), "tasks": m["tasks"]} for m in mix.values()),
+                          key=lambda m: -m["hours"]),
+            "split": {k: h(v) for k, v in split.items()},
+            "agents": sorted(({"agent": k, "hours": h(g["seconds"]), "sessions": len(g["sessions"])}
+                              for k, g in agents.items()), key=lambda g: -g["hours"]),
+            "focus": {"days": len(daily), "median_tasks": daily[len(daily) // 2] if daily else 0,
+                      "days_over_3": sum(1 for n in daily if n > 3)}}
 
 
 # ---------------------------------------------------------------- mutations

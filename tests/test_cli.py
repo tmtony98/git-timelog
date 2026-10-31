@@ -534,6 +534,54 @@ class CliTest(unittest.TestCase):
         self.summary()  # make sure the log is ingested
         return sqlite3.connect(Path(self.env["GIT_TIMELOG_HOME"]) / "timelog.db").execute(sql).fetchall()
 
+    def test_work_type_comes_from_branch_then_commits(self):
+        self.tl("init", "--days", "0")
+        self.git_event(0, "commit", "feat/login", "add form")
+        self.git_event(60, "commit", "WEB-1", "fix(cart): badge")
+        self.git_event(120, "commit", "WEB-1", "fix: count")
+        self.git_event(180, "commit", "WEB-1", "chore: bump")
+        self.agent(200, "main", "s-E", "prompt|how does auth work")
+        self.agent(500, "main", "s-E", "stop")
+        self.tl("add", "Sprint planning")
+        types = {t["title"]: t["type"] for t in self.summary()["tasks"]}
+        self.assertEqual(types["feat/login"], "feat")
+        self.assertEqual(types["WEB-1"], "fix")
+        self.assertEqual(types["how does auth work"], "explore")
+        self.assertEqual(types["Sprint planning"], "other")
+
+    def test_analytics_buckets_add_up_and_overlap_counts_once(self):
+        self.tl("init", "--days", "0")
+        self.agent(0, "feat/x", "s-1", "prompt|build it")   # agent working 0..600
+        self.agent(600, "feat/x", "s-1", "stop")
+        self.agent(900, "feat/x", "s-1", "prompt")          # your turn 600..900
+        self.agent(1500, "feat/x", "s-1", "stop")           # agent working 900..1500
+        self.git_event(1200, "commit", "feat/x", "feat: part one")  # overlaps the agent run
+        self.git_event(2400, "commit", "feat/x", "feat: part two")  # git only 1500..2400
+        self.summary()  # load the events so the task exists
+        self.tl("log", "feat/x", "30m", "pairing")
+        s = self.summary()
+        a = s["analytics"]["4w"]
+        hours = next(t["hours"] for t in s["tasks"] if t["branch"] == "feat/x")
+        self.assertAlmostEqual(a["hours"], hours, delta=.05)
+        self.assertAlmostEqual(sum(a["split"].values()), a["hours"], delta=.05)
+        self.assertAlmostEqual(sum(m["hours"] for m in a["mix"]), a["hours"], delta=.05)
+        self.assertAlmostEqual(a["split"]["agent"], 1200 / 3600, delta=.01)
+        self.assertAlmostEqual(a["split"]["you"], 300 / 3600, delta=.01)
+        # git only: the first commit's 30 min lead-in before the session (600 s) + 1500..2400
+        self.assertAlmostEqual(a["split"]["git"], 1500 / 3600, delta=.01)
+        self.assertAlmostEqual(a["split"]["logged"], .5, delta=.01)
+        self.assertEqual(a["agents"], [{"agent": "unknown", "hours": round(1500 / 3600, 2), "sessions": 1}])
+
+    def test_analytics_period_boundary_and_empty_database(self):
+        self.tl("init", "--days", "0")
+        empty = self.summary()["analytics"]
+        self.assertEqual((empty["week"]["hours"], empty["4w"]["focus"]["days"]), (0, 0))
+        self.git_event(-10 * 86400, "commit", "feat/old", "feat: old")      # ten days ago
+        self.git_event(-10 * 86400 + 1800, "commit", "feat/old", "feat: old 2")
+        a = self.summary()["analytics"]
+        self.assertGreater(a["4w"]["hours"], 0)
+        self.assertEqual(a["week"]["hours"], 0)
+
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")
         self.tl("add", "Sprint planning")
