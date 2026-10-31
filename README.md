@@ -6,9 +6,9 @@ You juggle three features, a bug and a review, each with its own Claude Code con
 git timelog keeps every one of them on a card, with its hours, its commits and a button that
 drops you straight back into that conversation.
 
-[![Watch the 30-second launch video](docs/launch-video.jpg)](https://github.com/tmtony98/git-timelog/releases/download/v0.7.0/git-timelog-launch.mp4)
+[![Watch the 35-second explainer: switch tasks and pick each one up mid-thought](docs/explainer-video.jpg)](https://github.com/tmtony98/git-timelog/releases/download/v0.8.0/git-timelog-explainer.mp4)
 
-▶ **[Watch the 30-second launch video](https://github.com/tmtony98/git-timelog/releases/download/v0.7.0/git-timelog-launch.mp4)** (mp4, 4 MB)
+▶ **[Watch the 35-second explainer](https://github.com/tmtony98/git-timelog/releases/download/v0.8.0/git-timelog-explainer.mp4)** (mp4, 5 MB)
 
 ![The dashboard: project tabs, totals, a board with an agent-session card, an idle branch on hold, and "Where the time went" below it](docs/dashboard.jpg)
 
