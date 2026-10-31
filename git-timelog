@@ -46,6 +46,7 @@ DEFAULTS = {
     "agent_gap_min": "20",      # coding-agent session: your think/test time between turns counted up to this
     "session_done_hours": "12", # research-only agent session (no branch) idle this long -> done
     "agent_titles": "prompt",   # card title for agent sessions: "prompt" (first 80 chars) or "off"
+    "terminal": "",             # app for "Open in Claude Code"; empty = first one found (gnome-terminal, konsole, ...)
     "idle_exit_min": "10",
     "port": "7777",
     "standup_dir": str(HOME / "Documents/git-timelog/standups"),
@@ -525,10 +526,50 @@ def agent_intervals(con, tasks, gap, with_session=False):
 
 def resume_command(agent, sid, cwd):
     """Shell command that reopens an agent session, for agents that can resume by id."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", sid or ""):
+        return None
     run = {"claude": f"claude --resume {sid}", "codex": f"codex resume {sid}"}.get(agent)
     if not run:
         return None  # Gemini CLI resumes by list position, Cursor conversations can't be resumed from a shell
     return f"cd {shlex.quote(cwd)} && {run}" if cwd else run
+
+
+# Terminal apps we can open a command in, as (program, arguments that come before the command).
+TERMINALS = [("gnome-terminal", ["--"]), ("konsole", ["-e"]), ("xfce4-terminal", ["-x"]), ("kitty", []),
+             ("alacritty", ["-e"]), ("wezterm", ["start", "--"]), ("x-terminal-emulator", ["-e"])]
+
+
+def open_session(sid, dry_run=False):
+    """Open a terminal window that resumes an agent session. Returns (ok, message, command).
+
+    Agent and folder come from our own records, never from the request, and the session id is
+    checked, so nothing a web page sends ends up in a shell.
+    """
+    con = db()
+    rows = con.execute("SELECT agent, cwd FROM events WHERE kind='agent' AND sha=? ORDER BY ts DESC", (sid,)).fetchall()
+    agent = next((r["agent"] for r in rows if r["agent"]), None)
+    cwd = next((r["cwd"] for r in rows if r["cwd"]), None)
+    cmd = resume_command(agent, sid, cwd)
+    if not cmd:
+        return False, "This session can't be resumed by ID.", None
+    if cwd and not os.path.isdir(cwd):
+        return False, f"Its folder no longer exists: {cwd}", cmd
+    script = f"{cmd}; exec bash"  # keep the window open after the agent exits
+    if sys.platform == "darwin":
+        argv = ["osascript", "-e", f'tell application "Terminal" to do script {json.dumps(script)}',
+                "-e", 'tell application "Terminal" to activate']
+    else:
+        wanted = C["terminal"].strip()
+        found = [(t, a) for t, a in TERMINALS if (not wanted or t == wanted) and shutil.which(t)]
+        if not found:
+            return False, "No terminal app found; set terminal = <app> in the config.", cmd
+        term, pre = found[0]
+        argv = [term, *pre, "bash", "-ic", script]  # -i: load ~/.bashrc, where tools like nvm put codex
+    if dry_run:
+        return True, " ".join(shlex.quote(a) for a in argv), cmd
+    subprocess.Popen(argv, cwd=cwd or None, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+    return True, f"Opened in {argv[0]}", cmd
 
 
 def task_detail(con, tid, max_commits=50, max_sessions=20):
@@ -865,6 +906,10 @@ class Handler(BaseHTTPRequestHandler):
                 b = self.body()
                 log_time(con, int(b["task_id"]), int(b["minutes"]), b.get("note", ""))
                 return self.send(200, {"ok": True})
+            m2 = re.fullmatch(r"/api/session/([A-Za-z0-9_-]+)/open", p)
+            if method == "POST" and m2:
+                ok, msg, cmd = open_session(m2.group(1), dry_run="dry=1" in self.path)
+                return self.send(200 if ok else 400, {"ok": ok, "message": msg, "command": cmd})
             if method == "POST" and p == "/api/report":
                 return self.send(200, {"path": str(report(con))})
             self.send(404, {"error": "not found"})

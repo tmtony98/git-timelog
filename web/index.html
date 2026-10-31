@@ -235,6 +235,7 @@ async function load() {
 // ---- task detail modal: where this task's time came from ----
 let detailId = null, detailOpener = null;
 const AGENT_NAMES = {claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", cursor: "Cursor"};
+const TERM_ICON = `<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3M12 15h5"/></svg>`;
 const COPY_ICON = `<svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
 const dur = (s) => { const m = Math.round(s / 60); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`; };
 const when = (ts) => new Date(ts * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
@@ -254,9 +255,9 @@ async function openDetail(id, opener) {
       <div class="l2">${s.agent ? `<span class="badge agent">${esc(name)}</span> ` : ""}${s.turns} prompt${s.turns === 1 ? "" : "s"} · ${when(s.start)} → ${when(s.end)}${s.ended ? "" : " · open"}</div>
       <dl class="dt-kv"><dt>Session ID</dt><dd><code class="sel">${esc(s.id)}</code></dd>
         ${s.resume ? `<dt>Resume</dt><dd><code class="sel">${esc(s.resume)}</code></dd>` : ""}</dl>
-      <div class="dt-acts">
-        ${s.resume ? `<button class="primary" data-copy="${esc(s.resume)}" aria-label="Copy the command that resumes this ${esc(name)} session">${COPY_ICON}Copy resume command</button>` : ""}
-        <button data-copy="${esc(s.id)}" aria-label="Copy this session's ID">${COPY_ICON}Copy session ID</button></div>
+      ${s.resume ? `<div class="dt-acts">
+        <button class="primary" data-open="${esc(s.id)}" aria-label="Open a terminal that resumes this ${esc(name)} session">${TERM_ICON}Open in ${esc(name)}</button>
+        <button data-copy="${esc(s.resume)}" aria-label="Copy the command that resumes this ${esc(name)} session">${COPY_ICON}Copy command</button></div>` : ""}
       ${why ? `<div class="dt-why">${esc(why)}</div>` : ""}</li>`; }).join("");
   const commits = d.commits.map(c => `<li><div class="l1"><code>${esc(c.sha.slice(0, 7))}</code><span class="grow">${esc(c.subject)}</span></div>
       <div class="l2">${when(c.ts)} · ${ago(c.ts)}</div></li>`).join("");
@@ -286,6 +287,20 @@ $("detail").addEventListener("close", () => {  // back to the card (it may have 
   const el = document.querySelector(`.card[data-id="${detailId}"]`) || detailOpener; detailId = null; if (el) el.focus(); });
 $("detail").addEventListener("click", async (e) => {
   if (e.target.id === "detail") return $("detail").close();  // backdrop
+  const opener = e.target.closest && e.target.closest("[data-open]");
+  if (opener) {
+    opener.disabled = true;
+    try {
+      const r = await fetch(`/api/session/${encodeURIComponent(opener.dataset.open)}/open`, {method: "POST"});
+      const j = await r.json();
+      if (j.ok) toast(j.message + " ↗");
+      else if (j.command) { try { await navigator.clipboard.writeText(j.command); } catch (_) {}
+        toast(j.message + " Command copied instead."); }
+      else toast(j.message);
+    } catch (err) { toast("Couldn't open a terminal: " + err.message); }
+    setTimeout(() => { opener.disabled = false; }, 1500);
+    return;
+  }
   const btn = e.target.closest && e.target.closest("[data-copy]");
   const text = btn && btn.dataset.copy;
   if (!text) return;

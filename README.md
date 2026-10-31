@@ -157,11 +157,15 @@ only then create a branch. git timelog tracks the session itself, so that time i
 
 No branch is ever created for you, so there is nothing to clean up afterwards.
 
-**Resume a session from its card.** Click a card to see its sessions. For Claude Code and Codex
-sessions the panel has a **Copy resume command** button, e.g.
-`cd ~/code/shop && claude --resume <session-id>` or `codex resume <session-id>`, so you can pick
-up exactly where that conversation left off. Gemini CLI resumes by list position and Cursor
-conversations can't be resumed from a shell, so those get a copyable session id only.
+**Resume a session from its card.** Click a card to see its sessions, each with its full session
+ID. For Claude Code and Codex sessions, **Open in Claude Code** (or **Open in Codex**) opens a
+terminal in the session's folder and resumes that conversation, e.g.
+`cd ~/code/shop && claude --resume <session-id>`; **Copy command** gives you the same command to
+paste yourself. The terminal is the first of gnome-terminal, konsole, xfce4-terminal, kitty,
+alacritty, wezterm or x-terminal-emulator that's installed (Terminal.app on macOS); set
+`terminal = <app>` to pick one. Only the dashboard page itself can ask for this, and the command
+is built from git timelog's own records, never from the request. Gemini CLI resumes by list
+position and Cursor conversations can't be resumed from a shell, so those show the ID only.
 
 **How session time is counted**
 
@@ -316,6 +320,7 @@ idle_hold_days = 3             ; unmerged branch untouched this long -> on hold
 agent_gap_min = 20             ; agent sessions: your time between turns counts up to this
 session_done_hours = 12        ; research-only agent session idle this long -> done
 agent_titles = prompt          ; "off" keeps prompt text out of the log and cards
+terminal =                     ; app for "Open in Claude Code"; empty = first one found
 stale_days = 7                 ; idle branches are marked done after backfill
 idle_exit_min = 10
 port = 7777                    ; re-run install.sh with PORT=... to change the socket

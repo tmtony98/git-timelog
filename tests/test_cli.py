@@ -340,6 +340,43 @@ class CliTest(unittest.TestCase):
         self.assertEqual(by["x-2222"]["resume"], f"cd {repo} && codex resume x-2222")
         self.assertEqual((by["g-3333"]["agent"], by["g-3333"]["resume"]), ("gemini", None))
 
+    def open_session(self, sid, dry=False):
+        code = (
+            "import importlib.machinery, importlib.util, json, sys;"
+            f"l = importlib.machinery.SourceFileLoader('gtl', {str(CLI)!r});"
+            "s = importlib.util.spec_from_loader('gtl', l); m = importlib.util.module_from_spec(s);"
+            f"l.exec_module(m); m.ingest(m.db()); print(json.dumps(m.open_session({sid!r}, dry_run={dry})))"
+        )
+        out = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_open_session_launches_a_terminal_with_the_resume_command(self):
+        # a fake "kitty" that records how it was started, instead of opening a window
+        fakebin = Path(self.tmp.name) / "bin"
+        fakebin.mkdir()
+        record = Path(self.tmp.name) / "kitty-args"
+        (fakebin / "kitty").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {record}\n')
+        (fakebin / "kitty").chmod(0o755)
+        self.env["PATH"] = f"{fakebin}:{self.env['PATH']}"
+        Path(self.env["GIT_TIMELOG_CONFIG"]).write_text("[git-timelog]\nterminal = kitty\n")
+        self.tl("init", "--days", "0")
+        self.run_agent_hook({"hook_event_name": "UserPromptSubmit", "session_id": "c-77", "cwd": str(self.repo),
+                             "transcript_path": "/h/.claude/projects/p/c-77.jsonl", "prompt": "hi"})
+        ok, msg, cmd = self.open_session("c-77")
+        self.assertTrue(ok, msg)
+        self.assertEqual(cmd, f"cd {self.repo} && claude --resume c-77")
+        for _ in range(50):  # the terminal starts in the background
+            if record.exists():
+                break
+            time.sleep(.05)
+        self.assertEqual(record.read_text().split("\n")[:3], ["bash", "-ic", f"{cmd}; exec bash"])
+
+    def test_open_session_refuses_what_it_cannot_resume(self):
+        self.tl("init", "--days", "0")
+        self.run_agent_hook({"hook_event_name": "BeforeAgent", "session_id": "g-1", "cwd": str(self.repo), "prompt": "x"})
+        self.assertFalse(self.open_session("g-1")[0])  # Gemini: no resume by id
+        self.assertFalse(self.open_session("x; rm -rf ~")[0])  # unknown / unsafe id
+
     def test_six_column_log_lines_from_older_hooks_still_load(self):
         self.tl("init", "--days", "0")
         self.agent(0, "main", "old-1", "prompt|from an older hook")  # writes the six-column format
