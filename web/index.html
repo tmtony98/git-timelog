@@ -101,6 +101,19 @@ a { color: var(--accent); }
 .in-types .h { text-align: end; font-weight: 600; font-variant-numeric: tabular-nums; }
 .in-types .p { text-align: end; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .in-empty { color: var(--muted); font-size: 13px; margin: 0; }
+/* info buttons and their shared popover */
+.info { display: inline-grid; place-items: center; width: 16px; height: 16px; padding: 0; margin-inline-start: 4px; border-radius: 50%;
+  border: 1px solid var(--muted); background: none; color: var(--muted); font: italic 600 10px/1 Georgia, serif;
+  vertical-align: 1px; cursor: help; position: relative; text-transform: none; letter-spacing: 0; }
+.info::after { content: ""; position: absolute; inset: -10px; }  /* bigger touch target than it looks */
+.info:hover, .info[aria-expanded="true"] { color: var(--ink); border-color: var(--ink); }
+.info:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#tip { position: fixed; inset: auto; margin: 0; max-width: min(320px, calc(100vw - 24px)); padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink);
+  box-shadow: 0 12px 32px rgba(0,0,0,.35); font-size: 13px; line-height: 1.5; }
+#tip b { font-weight: 600; }
+#tip .m { color: var(--muted); display: block; margin-top: 4px; font-size: 12px; }
+#tip code { font-size: 12px; background: var(--chip); padding: 0 4px; border-radius: 4px; }
 @media (max-width: 520px) {
   .in-tiles { grid-template-columns: 1fr 1fr; gap: 8px; }
   .seg button { min-height: 44px; }
@@ -207,12 +220,12 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
 
   <section class="panel insights" id="insights" aria-labelledby="in-title">
     <header class="in-head">
-      <h2 id="in-title">Where the time went <span class="in-agent" id="in-agent"></span></h2>
+      <h2 id="in-title">Where the time went <button class="info" data-tip="total" aria-label="How this panel counts time">i</button> <span class="in-agent" id="in-agent"></span></h2>
       <div class="seg" role="group" aria-label="Period">
         <button data-period="week">This week</button><button data-period="4w">Last 4 weeks</button></div>
     </header>
     <div class="in-tiles" id="in-tiles"></div>
-    <h3 class="in-label">Work type</h3>
+    <h3 class="in-label">Work type <button class="info" data-tip="type" aria-label="How work type is decided">i</button></h3>
     <ul class="in-types" id="in-types"></ul>
   </section>
 
@@ -234,6 +247,7 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
   </section>
 </div>
 <div class="toast" id="toast"></div>
+<div id="tip" popover role="tooltip"></div>
 <dialog id="detail" aria-labelledby="dt-title" aria-modal="true"><div id="dt-content"></div></dialog>
 
 <script>
@@ -290,6 +304,36 @@ let period = "week";
 try { period = localStorage.getItem("git-timelog.period") || "week"; } catch (e) {}
 const share = (v, total) => total ? Math.round(100 * v / total) : 0;
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const TIPS = {
+  total: `<b>Every second is counted once.</b> When sources overlap, the minute goes to the first that applies: agent working, then you between prompts, then git only. Timer and logged time are added on top, so the tiles add up to the same hours as the task cards.`,
+  agent: `<b>From each prompt you send until the agent finishes its reply</b>, up to 2 hours per turn. Includes time it spends waiting on a permission prompt.`,
+  you: `<b>From the agent's reply until your next prompt:</b> reading the answer, testing, reviewing the diff, writing the next prompt.<span class="m">Pauses longer than 20 minutes count as away and aren't included. Change it with <code>agent_gap_min</code>.</span>`,
+  git: `<b>Estimated from your commits and branch switches</b> (gaps under 2 hours, plus 30 minutes before the first commit after a break), minus anything an agent session already covers.<span class="m">Usually hands-on editing, work from before the agent hooks were set up, or agents without hooks.</span>`,
+  logged: `<b>Time from the timer and from "+ Log"</b> (or <code>git timelog log</code>), added on top of everything else.`,
+  focus: `<b>How many tasks you put 10+ minutes into on a typical active day</b> (the median). Days with more than 3 are flagged as juggling.`,
+  type: `<b>From the branch name first</b> (<code>feat/</code>, <code>fix/</code>, <code>chore/</code>…), otherwise the commits' <code>feat:</code> / <code>fix:</code> style. <b>Exploring</b> is agent sessions that never reached a branch.<span class="m">A task has one type, so a mixed branch counts once.</span>`,
+};
+let tipOwner = null;
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest && e.target.closest(".info");
+  if (!btn) return;
+  e.stopPropagation();
+  const tip = $("tip");
+  if (tipOwner === btn && tip.matches(":popover-open")) { tip.hidePopover(); return; }
+  tip.innerHTML = TIPS[btn.dataset.tip] || "";
+  if (!tip.showPopover) { btn.title = tip.textContent; return; }  // very old browsers: plain tooltip
+  if (tip.matches(":popover-open")) tip.hidePopover();
+  tip.showPopover();
+  tipOwner = btn; btn.setAttribute("aria-expanded", "true");
+  const r = btn.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+  const left = Math.max(12, Math.min(innerWidth - w - 12, r.left + r.width / 2 - w / 2));
+  const top = r.bottom + 8 + h > innerHeight - 8 ? r.top - h - 8 : r.bottom + 8;  // flip above near the bottom
+  tip.style.left = left + "px"; tip.style.top = top + "px";
+});
+$("tip").addEventListener("toggle", (e) => {
+  if (e.newState === "closed" && tipOwner) { tipOwner.setAttribute("aria-expanded", "false"); tipOwner = null; }
+});
+window.addEventListener("scroll", () => { if ($("tip").matches(":popover-open")) $("tip").hidePopover(); }, {passive: true});
 function renderAnalytics(a) {
   document.querySelectorAll("#insights [data-period]").forEach(b => {
     b.setAttribute("aria-pressed", b.dataset.period === period);
@@ -307,11 +351,14 @@ function renderAnalytics(a) {
   $("in-agent").textContent = known.length ? known.map(g => `${AGENT_NAMES[g.agent] || g.agent}, ${plural(g.sessions, "session")}`).join(" · ") : "";
   // who did the work
   const s = p.split, f = p.focus;
-  const tiles = [["Agent working", s.agent], ["You, between prompts", s.you], ["Git only", s.git], ["Timer & logged", s.logged]]
-    .filter(([label, h], i) => i < 3 || h > 0)
-    .map(([label, h]) => `<div class="in-tile"><div class="v">${fmtH(h)}<small>${share(h, p.hours)}%</small></div><div class="l">${label}</div></div>`);
+  const info = (key, label) => `<button class="info" data-tip="${key}" aria-label="What ${label.toLowerCase()} means">i</button>`;
+  const tiles = [["agent", "Agent working", s.agent], ["you", "You, between prompts", s.you], ["git", "Git only", s.git],
+                 ["logged", "Timer & logged", s.logged]]
+    .filter(([k, label, h], i) => i < 3 || h > 0)
+    .map(([k, label, h]) => `<div class="in-tile"><div class="v">${fmtH(h)}<small>${share(h, p.hours)}%</small></div>
+      <div class="l">${label}${info(k, label)}</div></div>`);
   if (f.days) tiles.push(`<div class="in-tile"><div class="v">${f.median_tasks}<small>tasks / day</small></div>
-    <div class="l">${f.days_over_3 ? `${plural(f.days_over_3, "day")} with more than 3` : "Typical day"}</div></div>`);
+    <div class="l">${f.days_over_3 ? `${plural(f.days_over_3, "day")} with more than 3` : "Typical day"}${info("focus", "focus")}</div></div>`);
   $("in-tiles").innerHTML = tiles.join("");
   // what kind of work: one accent bar per type, scaled to the biggest
   const max = Math.max(...p.mix.map(m => m.hours));
