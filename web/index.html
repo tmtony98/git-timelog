@@ -113,7 +113,9 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
 .dt-kv code.sel { color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px;
   word-break: break-all; user-select: all; display: inline-block; }
 .dt-acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.dt-acts button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 13px; }
+.dt-acts button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px;
+  padding: 0 14px; font-size: 13px; font-weight: 600; border-radius: 8px; }
+.dt-acts button:disabled { opacity: .45; cursor: not-allowed; }
 .dt-why { color: var(--muted); font-size: 12px; margin-top: 7px; }
 @media (max-width: 520px) {  /* phones: full-screen sheet */
   dialog#detail { width: 100vw; max-width: 100vw; height: 100vh; max-height: 100vh; border: 0; border-radius: 0; }
@@ -249,16 +251,17 @@ async function openDetail(id, opener) {
   const sessions = d.sessions.map(s => {
     const name = AGENT_NAMES[s.agent] || "agent";
     const why = s.resume ? "" : ({gemini: "Gemini CLI resumes by list position: run gemini --list-sessions in that folder.",
-                                  cursor: "Reopen it from Cursor's chat history."}[s.agent]
-                                 || "Recorded before the agent was known; if it was Claude Code, run claude --resume with this ID in its project folder.");
+                                  cursor: "Cursor conversations reopen from Cursor's chat history."}[s.agent]
+                                 || "No Claude Code or Codex session file was found for this ID, so it can't be reopened.");
     return `<li><div class="l1"><span class="grow">${s.title ? esc(s.title) : "<span style='color:var(--muted)'>(no title)</span>"}</span><span class="n">${dur(s.seconds)}</span></div>
       <div class="l2">${s.agent ? `<span class="badge agent">${esc(name)}</span> ` : ""}${s.turns} prompt${s.turns === 1 ? "" : "s"} · ${when(s.start)} → ${when(s.end)}${s.ended ? "" : " · open"}</div>
       <dl class="dt-kv"><dt>Session ID</dt><dd><code class="sel">${esc(s.id)}</code></dd>
         ${s.resume ? `<dt>Resume</dt><dd><code class="sel">${esc(s.resume)}</code></dd>` : ""}</dl>
-      ${s.resume ? `<div class="dt-acts">
-        <button class="primary" data-open="${esc(s.id)}" aria-label="Open a terminal that resumes this ${esc(name)} session">${TERM_ICON}Open in ${esc(name)}</button>
-        <button data-copy="${esc(s.resume)}" aria-label="Copy the command that resumes this ${esc(name)} session">${COPY_ICON}Copy command</button></div>` : ""}
-      ${why ? `<div class="dt-why">${esc(why)}</div>` : ""}</li>`; }).join("");
+      <div class="dt-acts">${s.resume
+        ? `<button class="primary" data-open="${esc(s.id)}" aria-label="Open a terminal that resumes this ${esc(name)} session">${TERM_ICON}Open in ${esc(name)}</button>
+           <button data-copy="${esc(s.resume)}" aria-label="Copy the command that resumes this ${esc(name)} session">${COPY_ICON}Copy command</button>`
+        : `<button class="primary" disabled aria-describedby="why-${esc(s.id)}">${TERM_ICON}Open in ${esc(s.agent ? name : "agent")}</button>`}</div>
+      ${why ? `<div class="dt-why" id="why-${esc(s.id)}">${esc(why)}</div>` : ""}</li>`; }).join("");
   const commits = d.commits.map(c => `<li><div class="l1"><code>${esc(c.sha.slice(0, 7))}</code><span class="grow">${esc(c.subject)}</span></div>
       <div class="l2">${when(c.ts)} · ${ago(c.ts)}</div></li>`).join("");
   const entries = d.entries.map(e => `<li><div class="l1"><span class="grow">${e.note ? esc(e.note) : (e.source === "timer" ? "Timer" : "Logged time")}</span><span class="n">${dur(e.end - e.start)}${e.running ? " ⏱" : ""}</span></div>

@@ -524,6 +524,36 @@ def agent_intervals(con, tasks, gap, with_session=False):
     return out
 
 
+def session_origin(sid):
+    """(agent, folder) for a session from the agent's own transcript files, or (None, None).
+
+    Covers sessions logged before the hook recorded the agent: Claude Code keeps
+    <config>/projects/<folder>/<id>.jsonl and Codex <home>/sessions/Y/M/D/rollout-*-<id>.jsonl,
+    and both write the session's working folder into those lines.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", sid or ""):
+        return None, None
+    claude = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
+    codex = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+    for agent, pattern in (("claude", claude.glob(f"projects/*/{sid}.jsonl")),
+                           ("codex", codex.glob(f"sessions/*/*/*/rollout-*{sid}.jsonl"))):
+        for path in pattern:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    for _, line in zip(range(200), f):  # the folder appears in the first lines
+                        try:
+                            d = json.loads(line)
+                        except ValueError:
+                            continue
+                        cwd = d.get("cwd") or (d.get("payload") or {}).get("cwd") if isinstance(d, dict) else None
+                        if cwd:
+                            return agent, cwd
+            except OSError:
+                pass
+            return agent, None
+    return None, None
+
+
 def resume_command(agent, sid, cwd):
     """Shell command that reopens an agent session, for agents that can resume by id."""
     if not re.fullmatch(r"[A-Za-z0-9_-]+", sid or ""):
@@ -549,6 +579,9 @@ def open_session(sid, dry_run=False):
     rows = con.execute("SELECT agent, cwd FROM events WHERE kind='agent' AND sha=? ORDER BY ts DESC", (sid,)).fetchall()
     agent = next((r["agent"] for r in rows if r["agent"]), None)
     cwd = next((r["cwd"] for r in rows if r["cwd"]), None)
+    if rows and not agent:
+        agent, found = session_origin(sid)
+        cwd = cwd or found
     cmd = resume_command(agent, sid, cwd)
     if not cmd:
         return False, "This session can't be resumed by ID.", None
@@ -602,6 +635,9 @@ def task_detail(con, tid, max_commits=50, max_sessions=20):
         title = next((e["subject"].partition("|")[2] for e in evs if e["subject"].partition("|")[2]), None)
         agent = next((e["agent"] for e in evs if e["agent"]), None)
         cwd = next((e["cwd"] for e in evs if e["cwd"]), None)
+        if not agent:  # logged before the hook recorded it: ask the agent's own session files
+            agent, found = session_origin(sid)
+            cwd = cwd or found
         sessions.append({"id": sid, "agent": agent, "cwd": cwd, "resume": resume_command(agent, sid, cwd),
                          "start": evs[0]["ts"], "end": evs[-1]["ts"],
                          "turns": sum(1 for e in evs if e["subject"].startswith("prompt")),

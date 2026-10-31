@@ -371,6 +371,19 @@ class CliTest(unittest.TestCase):
             time.sleep(.05)
         self.assertEqual(record.read_text().split("\n")[:3], ["bash", "-ic", f"{cmd}; exec bash"])
 
+    def test_sessions_logged_before_agent_tracking_are_found_in_claude_files(self):
+        claude_dir = Path(self.tmp.name) / "claude-config"
+        (claude_dir / "projects" / "-some-project").mkdir(parents=True)
+        (claude_dir / "projects" / "-some-project" / "old-c1.jsonl").write_text(
+            '{"type":"summary"}\n' + json.dumps({"type": "user", "cwd": str(self.repo), "sessionId": "old-c1"}) + "\n")
+        self.env["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+        self.tl("init", "--days", "0")
+        self.agent(0, "main", "old-c1", "prompt|logged by an older hook")  # six columns: no agent, no folder
+        t = next(t for t in self.summary()["tasks"] if t["session"] == "old-c1")
+        (s,) = self.detail(t["id"])["sessions"]
+        self.assertEqual(s["agent"], "claude")
+        self.assertEqual(s["resume"], f"cd {self.repo} && claude --resume old-c1")
+
     def test_open_session_refuses_what_it_cannot_resume(self):
         self.tl("init", "--days", "0")
         self.run_agent_hook({"hook_event_name": "BeforeAgent", "session_id": "g-1", "cwd": str(self.repo), "prompt": "x"})
@@ -378,6 +391,8 @@ class CliTest(unittest.TestCase):
         self.assertFalse(self.open_session("x; rm -rf ~")[0])  # unknown / unsafe id
 
     def test_six_column_log_lines_from_older_hooks_still_load(self):
+        self.env["CLAUDE_CONFIG_DIR"] = str(Path(self.tmp.name) / "no-claude")
+        self.env["CODEX_HOME"] = str(Path(self.tmp.name) / "no-codex")
         self.tl("init", "--days", "0")
         self.agent(0, "main", "old-1", "prompt|from an older hook")  # writes the six-column format
         t = next(t for t in self.summary()["tasks"] if t["session"] == "old-1")
