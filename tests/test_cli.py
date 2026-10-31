@@ -384,6 +384,20 @@ class CliTest(unittest.TestCase):
         self.assertEqual(s["agent"], "claude")
         self.assertEqual(s["resume"], f"cd {self.repo} && claude --resume old-c1")
 
+    def test_older_sessions_get_their_agent_in_the_analytics(self):
+        claude_dir = Path(self.tmp.name) / "claude-config"
+        (claude_dir / "projects" / "-p").mkdir(parents=True)
+        (claude_dir / "projects" / "-p" / "old-a.jsonl").write_text(json.dumps({"cwd": str(self.repo)}) + "\n")
+        self.env["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+        self.env["CODEX_HOME"] = str(Path(self.tmp.name) / "no-codex")
+        self.tl("init", "--days", "0")
+        self.agent(0, "feat/a", "old-a", "prompt|x")      # six-column lines: no agent recorded
+        self.agent(600, "feat/a", "old-a", "stop")
+        self.agent(0, "feat/b", "old-b", "prompt|y")      # no session file anywhere
+        self.agent(300, "feat/b", "old-b", "stop")
+        agents = {g["agent"]: g["sessions"] for g in self.summary()["analytics"]["4w"]["agents"]}
+        self.assertEqual(agents, {"claude": 1, "unknown": 1})
+
     def test_open_session_refuses_what_it_cannot_resume(self):
         self.tl("init", "--days", "0")
         self.run_agent_hook({"hook_event_name": "BeforeAgent", "session_id": "g-1", "cwd": str(self.repo), "prompt": "x"})

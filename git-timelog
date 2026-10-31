@@ -307,6 +307,7 @@ def ingest(con):
     row = con.execute("SELECT v FROM meta WHERE k='merged_check'").fetchone()
     if n or not row or now() - int(row["v"]) > 300:
         mark_merged(con)
+        fill_session_origins(con)
     con.commit()
     return n
 
@@ -553,6 +554,20 @@ def session_origin(sid):
                 pass
             return agent, None
     return None, None
+
+
+def fill_session_origins(con, limit=200):
+    """Record agent and folder for sessions logged before the hook did, once per session.
+
+    Looks in Claude Code's and Codex's own session files (session_origin) and saves the answer
+    on the session's events; sessions with no file get agent '' so they aren't looked up again.
+    """
+    sids = [r[0] for r in con.execute(
+        "SELECT sha FROM events WHERE kind='agent' GROUP BY sha HAVING MAX(agent IS NOT NULL) = 0 LIMIT ?", (limit,))]
+    for sid in sids:
+        agent, cwd = session_origin(sid)
+        con.execute("UPDATE events SET agent=?, cwd=COALESCE(cwd, ?) WHERE kind='agent' AND sha=?",
+                    (agent or "", cwd, sid))
 
 
 def resume_command(agent, sid, cwd):
