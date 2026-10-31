@@ -107,8 +107,14 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
 .dt-list code { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 12px; color: var(--muted); }
 .dt-list .n { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dt-empty { color: var(--muted); font-size: 13px; }
-.dt-acts { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
-.dt-acts button { padding: 3px 9px; font-size: 12px; }
+.dt-kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; margin: 9px 0 0; font-size: 12px; align-items: start; }
+.dt-kv dt { color: var(--muted); padding-top: 3px; }
+.dt-kv dd { margin: 0; min-width: 0; }
+.dt-kv code.sel { color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px;
+  word-break: break-all; user-select: all; display: inline-block; }
+.dt-acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.dt-acts button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 13px; }
+.dt-why { color: var(--muted); font-size: 12px; margin-top: 7px; }
 @media (max-width: 520px) {  /* phones: full-screen sheet */
   dialog#detail { width: 100vw; max-width: 100vw; height: 100vh; max-height: 100vh; border: 0; border-radius: 0; }
   .dt-split { grid-template-columns: repeat(2, 1fr); } }
@@ -229,6 +235,7 @@ async function load() {
 // ---- task detail modal: where this task's time came from ----
 let detailId = null, detailOpener = null;
 const AGENT_NAMES = {claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", cursor: "Cursor"};
+const COPY_ICON = `<svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
 const dur = (s) => { const m = Math.round(s / 60); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`; };
 const when = (ts) => new Date(ts * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
 async function openDetail(id, opener) {
@@ -238,9 +245,19 @@ async function openDetail(id, opener) {
   const t = d.task, tot = d.totals;
   const split = [["git", "Git"], ["agent", "Agent"], ["timer", "Timer"], ["manual", "Logged"]]
     .map(([k, l]) => `<div><b>${dur(tot[k])}</b><span>${l}</span></div>`).join("");
-  const sessions = d.sessions.map(s => `<li><div class="l1"><span class="grow">${s.title ? esc(s.title) : "<span style='color:var(--muted)'>(no title)</span>"}</span><span class="n">${dur(s.seconds)}</span></div>
-      <div class="l2">${s.agent ? `<span class="badge agent">${esc(AGENT_NAMES[s.agent] || s.agent)}</span> ` : ""}<code title="${esc(s.id)}">${esc(s.id.slice(0, 8))}</code> · ${s.turns} prompt${s.turns === 1 ? "" : "s"} · ${when(s.start)} → ${when(s.end)}${s.ended ? "" : " · open"}</div>
-      <div class="dt-acts">${s.resume ? `<button data-copy="${esc(s.resume)}" title="${esc(s.resume)}">Copy resume command</button>` : ""}<button data-copy="${esc(s.id)}">Copy session id</button></div></li>`).join("");
+  const sessions = d.sessions.map(s => {
+    const name = AGENT_NAMES[s.agent] || "agent";
+    const why = s.resume ? "" : ({gemini: "Gemini CLI resumes by list position: run gemini --list-sessions in that folder.",
+                                  cursor: "Reopen it from Cursor's chat history."}[s.agent]
+                                 || "Recorded before the agent was known; if it was Claude Code, run claude --resume with this ID in its project folder.");
+    return `<li><div class="l1"><span class="grow">${s.title ? esc(s.title) : "<span style='color:var(--muted)'>(no title)</span>"}</span><span class="n">${dur(s.seconds)}</span></div>
+      <div class="l2">${s.agent ? `<span class="badge agent">${esc(name)}</span> ` : ""}${s.turns} prompt${s.turns === 1 ? "" : "s"} · ${when(s.start)} → ${when(s.end)}${s.ended ? "" : " · open"}</div>
+      <dl class="dt-kv"><dt>Session ID</dt><dd><code class="sel">${esc(s.id)}</code></dd>
+        ${s.resume ? `<dt>Resume</dt><dd><code class="sel">${esc(s.resume)}</code></dd>` : ""}</dl>
+      <div class="dt-acts">
+        ${s.resume ? `<button class="primary" data-copy="${esc(s.resume)}" aria-label="Copy the command that resumes this ${esc(name)} session">${COPY_ICON}Copy resume command</button>` : ""}
+        <button data-copy="${esc(s.id)}" aria-label="Copy this session's ID">${COPY_ICON}Copy session ID</button></div>
+      ${why ? `<div class="dt-why">${esc(why)}</div>` : ""}</li>`; }).join("");
   const commits = d.commits.map(c => `<li><div class="l1"><code>${esc(c.sha.slice(0, 7))}</code><span class="grow">${esc(c.subject)}</span></div>
       <div class="l2">${when(c.ts)} · ${ago(c.ts)}</div></li>`).join("");
   const entries = d.entries.map(e => `<li><div class="l1"><span class="grow">${e.note ? esc(e.note) : (e.source === "timer" ? "Timer" : "Logged time")}</span><span class="n">${dur(e.end - e.start)}${e.running ? " ⏱" : ""}</span></div>
@@ -269,7 +286,8 @@ $("detail").addEventListener("close", () => {  // back to the card (it may have 
   const el = document.querySelector(`.card[data-id="${detailId}"]`) || detailOpener; detailId = null; if (el) el.focus(); });
 $("detail").addEventListener("click", async (e) => {
   if (e.target.id === "detail") return $("detail").close();  // backdrop
-  const text = e.target.dataset && e.target.dataset.copy;
+  const btn = e.target.closest && e.target.closest("[data-copy]");
+  const text = btn && btn.dataset.copy;
   if (!text) return;
   try { await navigator.clipboard.writeText(text); toast("Copied: " + (text.length > 60 ? text.slice(0, 57) + "…" : text)); }
   catch (err) { window.prompt("Copy this:", text); }
