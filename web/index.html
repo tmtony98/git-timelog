@@ -77,36 +77,42 @@ a { color: var(--accent); }
 .tablewrap { overflow-x: auto; }
 .addrow { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .addrow input { flex: 1; min-width: 180px; }
-/* "where the time went": an answer sentence, then what (work type) above who (agent / you) */
-.insights { margin-top: 20px; display: grid; gap: 16px; }
-.in-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+/* "where the time went": who did the work (tiles), what kind of work (one bar per type) */
+.insights { margin-top: 20px; }
+.in-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .in-head h2 { margin: 0; flex: 1; }
+.in-agent { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.in-agent:not(:empty)::before { content: "· "; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; background: none; padding: 6px 12px; font-size: 12px; color: var(--muted); min-height: 32px; }
 .seg button[aria-pressed="true"] { background: var(--chip); color: var(--ink); font-weight: 600; }
 .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.in-answer { margin: 0; font-size: 17px; line-height: 1.5; color: var(--muted); max-width: 70ch; text-wrap: pretty; }
-.in-answer b { color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; }
-.ribbons { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; }
-.ribbons .k { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-.ribbon { display: flex; height: 28px; border-radius: 6px; overflow: hidden; background: var(--chip); }
-.ribbon span { display: flex; align-items: center; min-width: 0; padding-inline: 8px; font-size: 12px; font-weight: 600;
-  color: var(--bg); white-space: nowrap; overflow: hidden; box-shadow: inset -1px 0 0 color-mix(in srgb, var(--bg) 35%, transparent); }
-.ribbon span:last-child { box-shadow: none; }
-.ribbon span.dim { color: transparent; }  /* label doesn't fit: the colour and the row below carry it */
-.in-detail { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-top: 8px; }
-.in-detail h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-.rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.rows li { display: grid; grid-template-columns: 10px 1fr auto auto; gap: 8px; align-items: center; font-size: 13px; }
-.rows li .dot { width: 10px; height: 10px; border-radius: 3px; }
-.rows li .sub { color: var(--muted); }
-.rows li .v { font-variant-numeric: tabular-nums; font-weight: 600; text-align: end; }
-.rows li .p { color: var(--muted); font-size: 12px; min-width: 3.5em; text-align: end; font-variant-numeric: tabular-nums; }
-.rows .empty { display: block; color: var(--muted); }
+.in-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.in-tile { background: var(--bg); border-radius: 10px; padding: 12px 14px; }
+.in-tile .v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.in-tile .v small { font-size: 12px; font-weight: 400; color: var(--muted); margin-inline-start: 6px; }
+.in-tile .l { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.in-label { margin: 16px 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.in-types { list-style: none; margin: 0; padding: 0; }
+.in-types li { display: grid; grid-template-columns: 13rem 1fr 3.5rem 3rem; gap: 12px; align-items: center; padding: 4px 0; font-size: 13px; }
+.in-types .n { color: var(--muted); font-size: 12px; }
+.in-types .track { height: 4px; border-radius: 2px; background: var(--chip); overflow: hidden; }
+.in-types .track i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.in-types .h { text-align: end; font-weight: 600; font-variant-numeric: tabular-nums; }
+.in-types .p { text-align: end; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.in-empty { color: var(--muted); font-size: 13px; margin: 0; }
+@media (max-width: 520px) {
+  .in-tiles { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .seg button { min-height: 44px; }
+  .in-types li { grid-template-columns: 1fr auto auto; gap: 4px 10px; }
+  .in-head h2 { flex-basis: 100%; }
+  .in-agent { display: block; margin-top: 4px; }
+  .in-agent:not(:empty)::before { content: none; }
+  .in-types .track { grid-column: 1 / -1; grid-row: 2; }
+}
 .col .more { width: 100%; margin-top: 2px; font-size: 12px; color: var(--muted); background: none; border-style: dashed; min-height: 32px; }
 .col .more:hover { color: var(--ink); }
 @media (max-width: 900px) { .in-detail { grid-template-columns: 1fr; gap: 16px; } }
-@media (max-width: 520px) { .in-answer { font-size: 15px; } .ribbon { height: 24px; } .seg button { min-height: 44px; } }
 /* task detail modal */
 .card { cursor: pointer; }
 .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -201,17 +207,13 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
 
   <section class="panel insights" id="insights" aria-labelledby="in-title">
     <header class="in-head">
-      <h2 id="in-title">Where the time went</h2>
+      <h2 id="in-title">Where the time went <span class="in-agent" id="in-agent"></span></h2>
       <div class="seg" role="group" aria-label="Period">
         <button data-period="week">This week</button><button data-period="4w">Last 4 weeks</button></div>
     </header>
-    <p class="in-answer" id="in-answer" aria-live="polite"></p>
-    <div class="ribbons" id="in-ribbons"></div>
-    <div class="in-detail">
-      <section><h3>Work type</h3><ul class="rows" id="in-mix"></ul></section>
-      <section><h3>Agent vs you</h3><ul class="rows" id="in-split"></ul></section>
-      <section><h3>Agents</h3><ul class="rows" id="in-agents"></ul></section>
-    </div>
+    <div class="in-tiles" id="in-tiles"></div>
+    <h3 class="in-label">Work type</h3>
+    <ul class="in-types" id="in-types"></ul>
   </section>
 
   <div class="grid2">
@@ -281,35 +283,13 @@ async function load() {
   if ($("detail").open && detailId) openDetail(detailId);  // keep an open modal current
 }
 
-// ---- "where the time went": answer sentence + what/who ribbons on one shared scale ----
-const TYPE_INFO = {feat: ["features", "var(--c0)"], fix: ["fixes", "var(--c2)"], refactor: ["refactors", "var(--c3)"],
-  chore: ["chores", "var(--c7)"], docs: ["docs", "var(--c1)"], test: ["tests", "var(--c4)"],
-  explore: ["exploring with an agent", "var(--c5)"], other: ["other work", "var(--muted)"]};
-const WHO_INFO = [["agent", "agent working", "var(--accent)"], ["you", "you, between prompts", "var(--c1)"],
-  ["git", "git activity only", "var(--c3)"], ["logged", "timer & logged", "var(--c4)"]];
+// ---- "where the time went": who did the work, and what kind of work ----
+const TYPE_NAMES = {feat: "Features", fix: "Fixes", refactor: "Refactors", chore: "Chores", docs: "Docs",
+  test: "Tests", explore: "Exploring", other: "Other"};
 let period = "week";
 try { period = localStorage.getItem("git-timelog.period") || "week"; } catch (e) {}
 const share = (v, total) => total ? Math.round(100 * v / total) : 0;
-const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
-function ribbon(parts, total) {  // parts: [label, hours, colour]
-  return `<div class="ribbon">${parts.filter(p => p[1] > 0).map(([label, h, color]) => {
-    const pc = share(h, total);
-    return `<span style="flex:${h} 1 0;background:${color}" title="${esc(cap(label))}: ${fmtH(h)} (${pc}%)">${esc(label)} ${pc}%</span>`;
-  }).join("")}</div>`;
-}
-function rows(items, total, extra) {  // items: [label, hours, colour, sub]
-  return items.map(([label, h, color, sub]) => `<li><span class="dot" style="background:${color}"></span>
-    <span>${esc(cap(label))}${sub ? ` <span class="sub">· ${esc(sub)}</span>` : ""}</span>
-    <span class="v">${fmtH(h)}</span><span class="p">${extra ? "" : share(h, total) + "%"}</span></li>`).join("");
-}
-function fitRibbonLabels() {  // show a segment's label only if it fits in the segment
-  document.querySelectorAll(".ribbon span").forEach(el => {
-    el.classList.remove("dim");
-    if (el.scrollWidth > el.clientWidth + 1) el.classList.add("dim");
-  });
-}
-let fitTimer;
-window.addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fitRibbonLabels, 100); });
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 function renderAnalytics(a) {
   document.querySelectorAll("#insights [data-period]").forEach(b => {
     b.setAttribute("aria-pressed", b.dataset.period === period);
@@ -317,27 +297,28 @@ function renderAnalytics(a) {
   });
   const p = a && a[period], when = period === "week" ? "this week" : "in the last 4 weeks";
   if (!p || !p.hours) {
-    $("in-answer").innerHTML = `No tracked time ${when} yet. Commit on a branch, or ask your coding agent something in a tracked repo, and it shows up here.`;
-    $("in-ribbons").innerHTML = ""; ["in-mix", "in-split", "in-agents"].forEach(id => $(id).innerHTML = `<li class="empty">Nothing yet.</li>`);
+    $("in-agent").textContent = "";
+    $("in-tiles").innerHTML = `<p class="in-empty">No tracked time ${when} yet. Commit on a branch, or ask your coding agent something in a tracked repo.</p>`;
+    $("in-types").innerHTML = "";
     return;
   }
-  // the answer, in words: total, the biggest kind of work, the agent/you split, focus
-  const top = p.mix[0], s = p.split, f = p.focus;
-  let answer = `<b>${fmtH(p.hours)}</b> ${when}, mostly ${TYPE_INFO[top.type][0]} (${share(top.hours, p.hours)}%).`;
-  answer += (s.agent + s.you) > 0
-    ? ` Your agent worked <b>${fmtH(s.agent)}</b>; you spent <b>${fmtH(s.you)}</b> between prompts.`
-    : ` No agent sessions ${when}; <code>git timelog agent-setup claude --write</code> starts tracking them.`;
-  if (f.days) answer += ` Typically <b>${f.median_tasks}</b> task${f.median_tasks === 1 ? "" : "s"} a day${f.days_over_3 ? `, ${f.days_over_3} day${f.days_over_3 === 1 ? "" : "s"} juggling more than 3` : ""}.`;
-  $("in-answer").innerHTML = answer;
-  const what = p.mix.map(m => [TYPE_INFO[m.type][0], m.hours, TYPE_INFO[m.type][1], `${m.tasks} task${m.tasks === 1 ? "" : "s"}`]);
-  const who = WHO_INFO.map(([k, label, color]) => [label, s[k], color]);
-  $("in-ribbons").innerHTML = `<span class="k">What</span>${ribbon(what, p.hours)}<span class="k">Who</span>${ribbon(who, p.hours)}`;
-  fitRibbonLabels();
-  $("in-mix").innerHTML = rows(what, p.hours);
-  $("in-split").innerHTML = rows(who.filter(w => w[1] > 0), p.hours);
-  $("in-agents").innerHTML = p.agents.length
-    ? rows(p.agents.map(g => [AGENT_NAMES[g.agent] || "unknown agent", g.hours, "var(--accent)", `${g.sessions} session${g.sessions === 1 ? "" : "s"}`]), 0, true)
-    : `<li class="empty">No agent sessions ${when}.</li>`;
+  // agents: a muted suffix in the title (no list unless there's more than one known agent)
+  const known = p.agents.filter(g => g.agent !== "unknown");
+  $("in-agent").textContent = known.length ? known.map(g => `${AGENT_NAMES[g.agent] || g.agent}, ${plural(g.sessions, "session")}`).join(" · ") : "";
+  // who did the work
+  const s = p.split, f = p.focus;
+  const tiles = [["Agent working", s.agent], ["You, between prompts", s.you], ["Git only", s.git], ["Timer & logged", s.logged]]
+    .filter(([label, h], i) => i < 3 || h > 0)
+    .map(([label, h]) => `<div class="in-tile"><div class="v">${fmtH(h)}<small>${share(h, p.hours)}%</small></div><div class="l">${label}</div></div>`);
+  if (f.days) tiles.push(`<div class="in-tile"><div class="v">${f.median_tasks}<small>tasks / day</small></div>
+    <div class="l">${f.days_over_3 ? `${plural(f.days_over_3, "day")} with more than 3` : "Typical day"}</div></div>`);
+  $("in-tiles").innerHTML = tiles.join("");
+  // what kind of work: one accent bar per type, scaled to the biggest
+  const max = Math.max(...p.mix.map(m => m.hours));
+  $("in-types").innerHTML = p.mix.map(m => `<li title="${plural(m.tasks, "task")} · ${fmtH(m.hours)}">
+      <span>${TYPE_NAMES[m.type] || m.type} <span class="n">· ${plural(m.tasks, "task")}</span></span>
+      <span class="track"><i style="width:${max ? 100 * m.hours / max : 0}%"></i></span>
+      <span class="h">${fmtH(m.hours)}</span><span class="p">${share(m.hours, p.hours)}%</span></li>`).join("");
 }
 
 // ---- task detail modal: where this task's time came from ----
