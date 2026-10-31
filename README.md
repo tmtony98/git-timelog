@@ -17,17 +17,35 @@ for you. It runs on your machine: no account, no cloud, nothing to `pip install`
 
 ▶ **[Watch the 30-second launch video](https://github.com/tmtony98/git-timelog/releases/download/v0.7.0/git-timelog-launch.mp4)** (mp4, 4 MB)
 
-![Dashboard: project tabs, totals, and a board with an agent-session card, idle branches on hold and merged ones done](docs/dashboard.jpg)
+![The dashboard: project tabs, totals, a board with an agent-session card, an idle branch on hold, and "Where the time went" below it](docs/dashboard.jpg)
 
-![Hours per day per task, including agent sessions, and the activity feed](docs/chart.jpg)
+## Purpose
 
-## Why
+**git timelog answers one question for developers who code with AI agents: where did my time
+go, and on what?**
 
-Coding agents changed how a task starts. You open a session, ask questions and read code with
-the agent, and only then create a branch, if you create one at all. Time trackers like Clockify
-or Toggl miss all of that, because nobody remembers to press start.
+Coding agents changed how work happens. A task now starts with a conversation (you ask, read
+code with the agent, try an idea) and only later becomes a branch, if it ever does. Between
+prompts you review diffs, test, and steer. Classic time trackers miss all of it, because they
+depend on you pressing start, and nobody does. Git alone misses it too: it only sees commits.
 
-Your agent and git already record what you worked on and when. git timelog reads both.
+Your agent and your repo already record what you worked on and when. git timelog reads both
+and turns them into tasks with honest hours, so that you can:
+
+- **Give a real standup** without reconstructing yesterday from memory: it's written for you.
+- **See what your agent work actually costs:** how much time the agent spent working, and how
+  much was you reading, testing and prompting between its replies.
+- **Know what kind of work filled the week:** features, fixes, chores, or exploring with an
+  agent.
+- **Estimate the next task, or bill a client,** from hours per task instead of guesses.
+- **Pick up where you left off:** every task lists its agent sessions, and one click reopens a
+  Claude Code or Codex conversation.
+
+**It's for you, not about you.** git timelog is a personal tool: it runs on your machine, keeps
+its data in one local file, needs no account, and sends nothing anywhere. It isn't built for
+monitoring anyone. You decide what to share, for example your standup note.
+
+**How it works, in short:**
 
 - **Zero effort.** Agent hooks record each session's prompts and turns; git hooks record branch
   switches, commits and merges. Nothing to start or stop.
@@ -63,7 +81,7 @@ Because the command is named `git-timelog`, git exposes it as a subcommand: `git
 
 - **Board:** todo · doing · on hold · done. Drag cards between columns; hover a card for
   Timer, Log time, Edit (ticket, PR link) and Delete (click twice; Undo appears for a few
-  seconds).
+  seconds). The done column shows its 8 newest cards, with "Show N more" for the rest.
 - **Totals and chart:** hours today, hours this week, active tasks, commits this week, and hours
   per day for the last 14 days.
 - **Activity feed:** recent commits, branch switches and merges.
@@ -71,9 +89,31 @@ Because the command is named `git-timelog`, git exposes it as a subcommand: `git
   you committed, hours per task, what's in progress and on hold. On Linux it's also written every
   weekday at 18:30. Point `standup_dir` at your Obsidian vault to collect them there.
 
+![Hours per day per task, including agent sessions, and the activity feed](docs/chart.jpg)
+
+### Where the time went
+
+Right under the board, for the selected project, this week or the last 4 weeks:
+
+![Where the time went: agent working, you between prompts, git only, timer and logged time, focus, and hours per work type, with an explanation open](docs/insights.jpg)
+
+- **Who did the work:** *agent working* (from your prompt until the agent's reply), *you, between
+  prompts* (from its reply until your next prompt, pauses under 20 minutes), *git only*
+  (estimated from commits and branch switches, where no agent session was running), and *timer
+  and logged* time. Every second is counted once, so the tiles add up to the tasks' hours.
+- **Focus:** how many tasks you put 10+ minutes into on a typical day, and how many days you
+  juggled more than 3.
+- **Work type:** hours per type, from the branch name (`feat/`, `fix/`, `chore/`…) or else the
+  commits' `feat:` / `fix:` style. Agent sessions that never reached a branch count as
+  *exploring*.
+- **Which agent:** shown next to the title (for example "Claude Code, 46 sessions").
+- Each ⓘ explains its number in a popover.
+
 ### Task details
 
 Click a card (or press Enter on it) to open its details. Escape or a click outside closes them.
+
+![Task details: total time split by git, agent, timer and logged; agent sessions with their ID, resume command and an Open in Claude Code button; commits](docs/task-details.jpg)
 
 | Section | What it shows |
 |---|---|
