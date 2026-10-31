@@ -23,7 +23,7 @@ from fnmatch import fnmatch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 HOME = Path.home()
 DATA = Path(os.environ.get("GIT_TIMELOG_HOME") or HOME / ".local/share/git-timelog")
@@ -144,6 +144,8 @@ CREATE TABLE IF NOT EXISTS entries(
   id INTEGER PRIMARY KEY, task_id INTEGER, start INTEGER, end INTEGER,
   note TEXT, source TEXT);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+CREATE INDEX IF NOT EXISTS events_branch ON events(repo, branch, ts);
+CREATE INDEX IF NOT EXISTS events_sha ON events(sha);
 """
 
 
@@ -443,8 +445,17 @@ def intervals(con):
     branch that was checked out during it, if shorter than the session gap;
     otherwise a new session starts and its first commit gets a lead-in credit.
     """
-    gap, lead = int(C["session_gap_min"]) * 60, int(C["lead_in_min"]) * 60
+    gap = int(C["session_gap_min"]) * 60
     tasks = {(r["repo"], r["branch"]): r["id"] for r in con.execute("SELECT id, repo, branch FROM tasks")}
+    out = union(git_intervals(con, tasks) + agent_intervals(con, tasks, gap))  # git gaps and agent turns overlap
+    for r in con.execute("SELECT task_id, start, COALESCE(end, ?) AS end, source FROM entries", (now(),)):
+        out.append((r["task_id"], r["start"], r["end"], r["source"]))
+    return out
+
+
+def git_intervals(con, tasks):
+    """[(task_id, start, end, "git")] from checkouts, commits and merges."""
+    gap, lead = int(C["session_gap_min"]) * 60, int(C["lead_in_min"]) * 60
     out, last_ts = [], None
     for e in con.execute("SELECT * FROM events WHERE kind != 'agent' ORDER BY ts"):  # agent turns: agent_intervals
         repo, ts = e["repo"], e["ts"]
@@ -457,9 +468,6 @@ def intervals(con):
         elif tid and e["kind"] != "checkout":
             out.append((tid, ts - lead, ts, "git"))
         last_ts = ts
-    out = union(out + agent_intervals(con, tasks, gap))  # git gaps and agent turns often overlap
-    for r in con.execute("SELECT task_id, start, COALESCE(end, ?) AS end, source FROM entries", (now(),)):
-        out.append((r["task_id"], r["start"], r["end"], r["source"]))
     return out
 
 
@@ -477,7 +485,7 @@ def folded_sessions(con):
             if any(e["branch"] and not is_base(e["branch"]) for e in evs)}
 
 
-def agent_intervals(con, tasks, gap):
+def agent_intervals(con, tasks, gap, with_session=False):
     """Time from coding-agent turns.
 
     While the agent is working (prompt -> stop) the gap counts up to the git
@@ -503,8 +511,57 @@ def agent_intervals(con, tasks, gap):
             a, b = evs[i - 1], evs[i]
             limit = gap if a["subject"].startswith("prompt") else think
             if target[i] and 0 <= b["ts"] - a["ts"] < limit:
-                out.append((target[i], a["ts"], b["ts"], "agent"))
+                out.append((target[i], a["ts"], b["ts"], "agent") + ((sid,) if with_session else ()))
     return out
+
+
+def task_detail(con, tid, max_commits=50, max_sessions=20):
+    """Where a task's time came from: totals per source, agent sessions, commits, manual entries."""
+    ingest(con)
+    t = con.execute(f"SELECT *, ({LAST_SEEN}) AS last_seen FROM tasks WHERE id=?", (tid,)).fetchone()
+    if t is None or t["deleted"] or (t["session"] and t["branch"] is None and t["session"] in folded_sessions(con)):
+        return None  # deleted, or a research session that now lives on its branch's card
+    tasks = {(r["repo"], r["branch"]): r["id"] for r in con.execute("SELECT id, repo, branch FROM tasks")}
+    gap = int(C["session_gap_min"]) * 60
+    git_iv = [iv for iv in git_intervals(con, tasks) if iv[0] == tid]
+    agent_iv = [iv for iv in agent_intervals(con, tasks, gap, with_session=True) if iv[0] == tid]
+    entries = con.execute("SELECT start, COALESCE(end, ?) AS end, end IS NULL AS running, note, source FROM entries "
+                          "WHERE task_id=? ORDER BY start DESC", (now(), tid)).fetchall()
+    secs = lambda ivs: sum(max(0, iv[2] - iv[1]) for iv in ivs)
+    merged = union(git_iv + [iv[:4] for iv in agent_iv])
+    totals = {"git": secs(git_iv), "agent": secs(agent_iv),
+              "timer": sum(e["end"] - e["start"] for e in entries if e["source"] == "timer"),
+              "manual": sum(e["end"] - e["start"] for e in entries if e["source"] != "timer")}
+    totals["total"] = secs(merged) + totals["timer"] + totals["manual"]
+    # agent sessions credited to this task (plus the task's own session, for research cards)
+    sids = {iv[4] for iv in agent_iv} | ({t["session"]} if t["session"] else set())
+    titles_on = C["agent_titles"].strip().lower() != "off"
+    sessions = []
+    for sid in sids:
+        evs = con.execute("SELECT ts, subject FROM events WHERE kind='agent' AND sha=? ORDER BY ts", (sid,)).fetchall()
+        if not evs:
+            continue
+        title = next((e["subject"].partition("|")[2] for e in evs if e["subject"].partition("|")[2]), None)
+        sessions.append({"id": sid, "start": evs[0]["ts"], "end": evs[-1]["ts"],
+                         "turns": sum(1 for e in evs if e["subject"].startswith("prompt")),
+                         "seconds": secs([iv for iv in agent_iv if iv[4] == sid]),
+                         "ended": evs[-1]["subject"] == "end", "title": title if titles_on else None})
+    sessions.sort(key=lambda x: -x["start"])
+    commits, n_commits = [], 0
+    if t["branch"]:
+        commits = [dict(r) for r in con.execute(
+            "SELECT sha, subject, ts FROM events WHERE kind='commit' AND repo=? AND branch=? ORDER BY ts DESC LIMIT ?",
+            (t["repo"], t["branch"], max_commits))]
+        n_commits = con.execute("SELECT COUNT(*) FROM events WHERE kind='commit' AND repo=? AND branch=?",
+                                (t["repo"], t["branch"])).fetchone()[0]
+    first = con.execute("SELECT MIN(ts) FROM events WHERE repo=? AND branch=?", (t["repo"], t["branch"])).fetchone()[0]
+    task = {k: t[k] for k in ("id", "repo", "branch", "title", "status", "ticket", "pr_url", "note", "session")}
+    task["first"] = min(x for x in (first, t["created"], sessions[-1]["start"] if sessions else None) if x)
+    task["last"] = max(x for x in (t["last_seen"], t["updated"]) if x)
+    return {"task": task, "totals": totals, "sessions": sessions[:max_sessions], "sessions_total": len(sessions),
+            "commits": commits, "commits_total": n_commits,
+            "entries": [{"start": e["start"], "end": e["end"], "running": bool(e["running"]), "note": e["note"] or "",
+                         "source": e["source"]} for e in entries]}
 
 
 def union(ivs):
@@ -768,6 +825,9 @@ class Handler(BaseHTTPRequestHandler):
                 b = self.body()
                 return self.send(201, {"id": create_task(con, b["title"].strip(), b.get("repo"))})
             m = re.fullmatch(r"/api/task/(\d+)", p)
+            if method == "GET" and m:
+                detail = task_detail(con, int(m.group(1)))
+                return self.send(200, detail) if detail else self.send(404, {"error": "no such task"})
             if method == "PATCH" and m:
                 b = self.body()
                 if "deleted" in b:

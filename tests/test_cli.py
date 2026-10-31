@@ -51,6 +51,16 @@ class CliTest(unittest.TestCase):
             self.fail(f"git-timelog {' '.join(args)} failed:\n{r.stderr}")
         return r
 
+    def detail(self, tid):
+        code = (
+            "import importlib.machinery, importlib.util, json, sys;"
+            f"l = importlib.machinery.SourceFileLoader('gtl', {str(CLI)!r});"
+            "s = importlib.util.spec_from_loader('gtl', l); m = importlib.util.module_from_spec(s);"
+            f"l.exec_module(m); print(json.dumps(m.task_detail(m.db(), {tid})))"
+        )
+        out = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
     def summary(self):
         code = (
             "import importlib.machinery, importlib.util, json, sys;"
@@ -391,6 +401,62 @@ class CliTest(unittest.TestCase):
         r = self.tl("agent-setup", "gemini", "--write", check=False)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("Is gemini installed?", r.stderr)
+
+    def task_id(self, **match):
+        return next(t["id"] for t in self.summary()["tasks"] if all(t[k] == v for k, v in match.items()))
+
+    def test_detail_shows_commits_sessions_and_time_by_source(self):
+        self.tl("init", "--days", "0")
+        self.agent(0, "main", "s-A", "prompt|fix the cart badge")
+        self.agent(600, "main", "s-A", "stop")
+        self.git_event(700, "checkout", "fix/cart", "from:main")
+        self.agent(900, "fix/cart", "s-A", "prompt")
+        self.agent(1500, "fix/cart", "s-A", "stop")
+        self.git_event(1560, "commit", "fix/cart", "first fix")
+        self.git_event(2400, "commit", "fix/cart", "second fix")
+        tid = self.task_id(branch="fix/cart")
+        d = self.detail(tid)
+        self.assertEqual([c["subject"] for c in d["commits"]], ["second fix", "first fix"])  # newest first
+        self.assertEqual(d["commits_total"], 2)
+        (sess,) = d["sessions"]  # the research session was folded into this card
+        self.assertEqual((sess["id"], sess["turns"], sess["title"]), ("s-A", 2, "fix the cart badge"))
+        self.assertEqual(sess["seconds"], 1500)
+        hours = next(t["hours"] for t in self.summary()["tasks"] if t["id"] == tid)
+        self.assertAlmostEqual(d["totals"]["total"] / 3600, hours, places=2)
+        for k in ("git", "agent"):
+            self.assertLessEqual(d["totals"][k], d["totals"]["total"])
+        hidden = next(r for r in self.query("SELECT id FROM tasks WHERE session='s-A'"))
+        self.assertIsNone(self.detail(hidden[0]))  # folded session card has no page of its own
+
+    def test_detail_titles_off_deleted_and_manual(self):
+        Path(self.env["GIT_TIMELOG_CONFIG"]).write_text("[git-timelog]\nagent_titles = off\n")
+        self.tl("init", "--days", "0")
+        self.agent(0, "main", "s-R", "prompt|old title written before titles were switched off")
+        self.agent(300, "main", "s-R", "stop")
+        rid = self.task_id(session="s-R")
+        self.assertIsNone(self.detail(rid)["sessions"][0]["title"])
+        self.tl("add", "Design review")
+        self.tl("log", "Design review", "45m", "figma pass")
+        d = self.detail(self.task_id(title="Design review"))
+        self.assertEqual((d["commits"], d["sessions"]), ([], []))
+        self.assertEqual(d["entries"][0]["note"], "figma pass")
+        self.assertEqual(d["totals"]["manual"], 45 * 60)
+        self.tl("delete", "Design review")
+        tid = next(r[0] for r in self.query("SELECT id FROM tasks WHERE title='Design review'"))
+        self.assertIsNone(self.detail(tid))
+
+    def test_detail_caps_long_commit_lists(self):
+        self.tl("init", "--days", "0")
+        for i in range(60):
+            self.git_event(i * 60, "commit", "feat/big", f"step {i}")
+        d = self.detail(self.task_id(branch="feat/big"))
+        self.assertEqual((len(d["commits"]), d["commits_total"]), (50, 60))
+        self.assertEqual(d["commits"][0]["subject"], "step 59")
+
+    def query(self, sql):
+        import sqlite3
+        self.summary()  # make sure the log is ingested
+        return sqlite3.connect(Path(self.env["GIT_TIMELOG_HOME"]) / "timelog.db").execute(sql).fetchall()
 
     def test_manual_task_and_log(self):
         self.tl("init", "--days", "0")

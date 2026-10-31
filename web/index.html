@@ -77,6 +77,36 @@ a { color: var(--accent); }
 .tablewrap { overflow-x: auto; }
 .addrow { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .addrow input { flex: 1; min-width: 180px; }
+/* task detail drawer */
+.card { cursor: pointer; }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+dialog#detail { margin: 0 0 0 auto; height: 100vh; max-height: 100vh; width: 460px; max-width: 100vw; padding: 0;
+  border: 0; border-left: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+dialog#detail::backdrop { background: rgba(0,0,0,.45); }
+.dt-head { position: sticky; top: 0; background: var(--panel); padding: 18px 20px 14px; border-bottom: 1px solid var(--line); z-index: 1; }
+.dt-head .row { display: flex; gap: 10px; align-items: flex-start; }
+.dt-head h2 { font-size: 17px; text-transform: none; letter-spacing: 0; color: var(--ink); margin: 0; flex: 1; word-break: break-word; }
+.dt-head .sub { color: var(--muted); font-size: 12px; margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.dt-close { padding: 2px 10px; font-size: 18px; line-height: 1.2; }
+.dt-body { padding: 4px 20px 28px; }
+.dt-body h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 20px 0 8px; font-weight: 600; }
+.dt-total { display: flex; align-items: baseline; gap: 8px; }
+.dt-total b { font-size: 26px; font-variant-numeric: tabular-nums; }
+.dt-total span { color: var(--muted); font-size: 12px; }
+.dt-split { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px; }
+.dt-split div { background: var(--bg); border-radius: 8px; padding: 8px; }
+.dt-split b { display: block; font-variant-numeric: tabular-nums; }
+.dt-split span { color: var(--muted); font-size: 11px; }
+.dt-list { list-style: none; padding: 0; margin: 0; }
+.dt-list li { padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.dt-list li:last-child { border-bottom: 0; }
+.dt-list .l1 { display: flex; gap: 8px; align-items: baseline; }
+.dt-list .l1 .grow { flex: 1; min-width: 0; word-break: break-word; }
+.dt-list .l2 { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.dt-list code { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 12px; color: var(--muted); }
+.dt-list .n { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dt-empty { color: var(--muted); font-size: 13px; }
+@media (max-width: 520px) { dialog#detail { width: 100vw; border-left: 0; } .dt-split { grid-template-columns: repeat(2, 1fr); } }
 .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg);
   padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .toast.show { opacity: 1; }
@@ -144,6 +174,7 @@ a { color: var(--accent); }
   </section>
 </div>
 <div class="toast" id="toast"></div>
+<dialog id="detail" aria-labelledby="dt-title"><div id="dt-content"></div></dialog>
 
 <script>
 const STATUSES = ["todo", "doing", "hold", "done"];
@@ -185,7 +216,51 @@ function toast(msg, actionLabel, action) {
   toastTimer = setTimeout(() => t.classList.remove("show", "act"), action ? 6000 : 2200);
 }
 
-async function load() { data = await api("/api/summary"); pickProject(); render(); }
+async function load() {
+  data = await api("/api/summary"); pickProject(); render();
+  if ($("detail").open && detailId) openDetail(detailId);  // keep an open drawer current
+}
+
+// ---- task detail drawer: where this task's time came from ----
+let detailId = null, detailOpener = null;
+const dur = (s) => { const m = Math.round(s / 60); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`; };
+const when = (ts) => new Date(ts * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+async function openDetail(id, opener) {
+  let d;
+  try { d = await api(`/api/task/${id}`); } catch (e) { toast("Couldn't load task: " + e.message); return; }
+  detailId = id; if (opener) detailOpener = opener;
+  const t = d.task, tot = d.totals;
+  const split = [["git", "Git"], ["agent", "Agent"], ["timer", "Timer"], ["manual", "Logged"]]
+    .map(([k, l]) => `<div><b>${dur(tot[k])}</b><span>${l}</span></div>`).join("");
+  const sessions = d.sessions.map(s => `<li><div class="l1"><span class="grow">${s.title ? esc(s.title) : "<span style='color:var(--muted)'>(no title)</span>"}</span><span class="n">${dur(s.seconds)}</span></div>
+      <div class="l2"><code>${esc(s.id.slice(0, 8))}</code> · ${s.turns} prompt${s.turns === 1 ? "" : "s"} · ${when(s.start)} → ${when(s.end)}${s.ended ? "" : " · open"}</div></li>`).join("");
+  const commits = d.commits.map(c => `<li><div class="l1"><code>${esc(c.sha.slice(0, 7))}</code><span class="grow">${esc(c.subject)}</span></div>
+      <div class="l2">${when(c.ts)} · ${ago(c.ts)}</div></li>`).join("");
+  const entries = d.entries.map(e => `<li><div class="l1"><span class="grow">${e.note ? esc(e.note) : (e.source === "timer" ? "Timer" : "Logged time")}</span><span class="n">${dur(e.end - e.start)}${e.running ? " ⏱" : ""}</span></div>
+      <div class="l2">${e.source === "timer" ? "timer" : "logged"} · ${when(e.start)}</div></li>`).join("");
+  $("dt-content").innerHTML = `
+    <div class="dt-head"><div class="row"><h2 id="dt-title">${esc(t.title)}</h2>
+      <button class="dt-close" aria-label="Close" onclick="document.getElementById('detail').close()">×</button></div>
+      <div class="sub"><span class="badge">${esc(t.status === "hold" ? "on hold" : t.status)}</span>
+        ${t.repo ? `<span class="badge">${esc(t.repo)}</span>` : ""}${t.branch && t.branch !== t.title ? `<code>${esc(t.branch)}</code>` : ""}
+        ${t.ticket ? `<span class="badge">${esc(t.ticket)}</span>` : ""}${t.pr_url ? `<a href="${esc(t.pr_url)}" target="_blank" rel="noopener">PR ↗</a>` : ""}
+        <span>${when(t.first)} → ${ago(t.last)}</span></div></div>
+    <div class="dt-body">
+      <h3>Time</h3>
+      <div class="dt-total"><b>${dur(tot.total)}</b><span>total · overlaps counted once</span></div>
+      <div class="dt-split">${split}</div>
+      <h3>Agent sessions${d.sessions_total > d.sessions.length ? ` · newest ${d.sessions.length} of ${d.sessions_total}` : ""}</h3>
+      ${sessions ? `<ul class="dt-list">${sessions}</ul>` : `<div class="dt-empty">No coding-agent sessions on this task.</div>`}
+      <h3>Commits${d.commits_total ? ` · ${d.commits_total}` : ""}${d.commits_total > d.commits.length ? ` (newest ${d.commits.length})` : ""}</h3>
+      ${commits ? `<ul class="dt-list">${commits}</ul>` : `<div class="dt-empty">${t.branch ? "No commits yet." : "Not a branch task."}</div>`}
+      ${entries ? `<h3>Timer &amp; logged time</h3><ul class="dt-list">${entries}</ul>` : ""}
+      ${t.note ? `<h3>Note</h3><div class="dt-empty" style="color:var(--ink)">${esc(t.note)}</div>` : ""}
+    </div>`;
+  const dlg = $("detail"); if (!dlg.open) dlg.showModal();
+}
+$("detail").addEventListener("close", () => {  // back to the card (it may have been re-rendered meanwhile)
+  const el = document.querySelector(`.card[data-id="${detailId}"]`) || detailOpener; detailId = null; if (el) el.focus(); });
+$("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("detail").close(); });  // backdrop
 
 // The selected project comes from the URL (#name, bookmarkable), then the last one used.
 function pickProject() {
@@ -290,7 +365,7 @@ function render() {
 }
 
 function card(t) {
-  return `<div class="card" draggable="true" data-id="${t.id}">
+  return `<div class="card" draggable="true" tabindex="0" data-id="${t.id}" aria-label="${esc(t.title)}: open details">
     <div class="t">${esc(t.title)}</div>
     ${t.last_subject ? `<div class="s" title="${esc(t.last_subject)}">${esc(t.last_subject)}</div>` : ""}
     <div class="meta">${t.session ? `<span class="badge agent" title="Coding-agent session that hasn't touched a branch: research, questions, planning">agent session</span>` : ""}
@@ -305,7 +380,9 @@ function card(t) {
 function bindDnD() {
   document.querySelectorAll(".card").forEach(c => {
     c.ondragstart = (e) => e.dataTransfer.setData("text/plain", c.dataset.id);
-    c.onclick = (e) => { const a = e.target.dataset.act; if (a) cardAction(a, +c.dataset.id, e.target); };
+    c.onclick = (e) => { const a = e.target.dataset.act;
+      if (a) cardAction(a, +c.dataset.id, e.target); else openDetail(+c.dataset.id, c); };
+    c.onkeydown = (e) => { if (e.key === "Enter" && e.target === c) openDetail(+c.dataset.id, c); };
   });
   document.querySelectorAll(".col").forEach(col => {
     col.ondragover = (e) => { e.preventDefault(); col.classList.add("over"); };
