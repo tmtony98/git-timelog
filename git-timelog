@@ -604,11 +604,11 @@ def open_session(sid, dry_run=False):
     if cwd and not os.path.isdir(cwd):
         return False, f"Its folder no longer exists: {cwd}", cmd
     script = f"{cmd}; exec bash"  # keep the window open after the agent exits
-    if sys.platform == "darwin":
+    wanted = C["terminal"].strip()
+    if sys.platform == "darwin" and not wanted:  # macOS default: Terminal.app (a configured terminal wins)
         argv = ["osascript", "-e", f'tell application "Terminal" to do script {json.dumps(script)}',
                 "-e", 'tell application "Terminal" to activate']
     else:
-        wanted = C["terminal"].strip()
         found = [(t, a) for t, a in TERMINALS if (not wanted or t == wanted) and shutil.which(t)]
         if not found:
             return False, "No terminal app found; set terminal = <app> in the config.", cmd
