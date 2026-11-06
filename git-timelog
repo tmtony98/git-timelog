@@ -236,10 +236,9 @@ def add_agent_event(con, ts, repo, branch, sid, subject, live, agent="", cwd="")
                 (ts, "agent", repo, branch, sid, subject, agent or None, cwd or None))
     what, _, title = subject.partition("|")
     if branch and not is_base(branch):
+        # The folder's branch may have been switched by another session in the same folder, so
+        # agent events don't reopen held or done tasks; real git activity on the branch does.
         ensure_task(con, repo, branch, ts)
-        if live:
-            con.execute("UPDATE tasks SET status='doing', updated=?, reopened=? WHERE repo=? AND branch=? "
-                        "AND status IN ('done', 'hold') AND updated < ?", (ts, ts, repo, branch, ts))
         return
     row = con.execute("SELECT id, title FROM tasks WHERE session=?", (sid,)).fetchone()
     if row is None and what == "prompt":  # opening and closing the agent without asking anything isn't a task
@@ -489,10 +488,72 @@ def agent_sessions(con):
     return out
 
 
+def session_branches(con, sessions=None):
+    """{session id: [the branch the session was working on at each of its events, or None]}.
+
+    Agents report the branch checked out in their folder, and several sessions often share one
+    folder, so when one session switches branch every other session there starts reporting the
+    new branch too. A session's branch therefore only changes on a checkout *it* made: one that
+    happened during its own turn (after its prompt, before its reply), or, when it was the only
+    session open in that folder, any checkout. Its next event must show the new branch, which
+    keeps checkouts made in another worktree of the same repo from counting.
+    """
+    sessions = sessions if sessions is not None else agent_sessions(con)
+    checkouts = {}
+    for c in con.execute("SELECT ts, repo, branch FROM events WHERE kind='checkout' ORDER BY ts"):
+        checkouts.setdefault(c["repo"], []).append((c["ts"], c["branch"]))
+    def turns(evs):  # (prompt ts, reply ts): a turn ends at the next stop or prompt, not at start/end
+        out = []
+        for i, a in enumerate(evs):
+            if a["subject"].startswith("prompt"):
+                b = next((b for b in evs[i + 1:] if b["subject"] == "stop" or b["subject"].startswith("prompt")),
+                         evs[-1])
+                out.append((a["ts"], b["ts"]))
+        return out
+    owned = {}  # session id -> [(ts, branch)] of checkouts it made
+    for repo, cos in checkouts.items():
+        here = {sid: evs for sid, evs in sessions.items() if evs[0]["repo"] == repo}
+        session_turns = {sid: turns(evs) for sid, evs in here.items()}
+        for ts, branch in cos:
+            def follows(evs):  # the session's next event after the checkout shows the new branch
+                nxt = next((e for e in evs if e["ts"] >= ts), None)
+                return nxt is not None and nxt["branch"] == branch
+            in_turn = []
+            for sid, evs in here.items():
+                for start, end in session_turns[sid]:
+                    if start <= ts <= end and follows(evs):
+                        in_turn.append((start, sid))
+            if in_turn:
+                owned.setdefault(max(in_turn)[1], []).append((ts, branch))
+                continue
+            open_now = [sid for sid, evs in here.items() if evs[0]["ts"] <= ts <= evs[-1]["ts"]]
+            if len(open_now) == 1 and follows(here[open_now[0]]):
+                owned.setdefault(open_now[0], []).append((ts, branch))
+    commits = {}
+    for c in con.execute("SELECT ts, repo, branch FROM events WHERE kind='commit'"):
+        commits.setdefault((c["repo"], c["branch"]), []).append(c["ts"])
+    out = {}
+    for sid, evs in sessions.items():
+        first = evs[0]["branch"]
+        home = first if first and not is_base(first) else None
+        mine = owned.get(sid, [])
+        # A session that opens on a branch someone else checked out, then switches branch itself
+        # before anything was committed there, was researching for the branch it switched to.
+        if home and mine and not any(evs[0]["ts"] <= t <= mine[0][0] for t in commits.get((evs[0]["repo"], home), [])):
+            home = None
+        k, eff = 0, []
+        for e in evs:
+            while k < len(mine) and mine[k][0] <= e["ts"]:
+                home = mine[k][1] if not is_base(mine[k][1]) else None
+                k += 1
+            eff.append(home)
+        out[sid] = eff
+    return out
+
+
 def folded_sessions(con):
     """Sessions that worked on a feature branch: their research time belongs to that branch's task."""
-    return {sid for sid, evs in agent_sessions(con).items()
-            if any(e["branch"] and not is_base(e["branch"]) for e in evs)}
+    return {sid for sid, branches in session_branches(con).items() if any(branches)}
 
 
 def agent_intervals(con, tasks, gap, with_session=False):
@@ -507,9 +568,10 @@ def agent_intervals(con, tasks, gap, with_session=False):
     session_task = {r["session"]: r["id"]
                     for r in con.execute("SELECT id, session FROM tasks WHERE session IS NOT NULL")}
     out = []
-    for sid, evs in agent_sessions(con).items():
-        own = [tasks.get((e["repo"], e["branch"])) if e["branch"] and not is_base(e["branch"]) else None
-               for e in evs]
+    sessions = agent_sessions(con)
+    branches = session_branches(con, sessions)
+    for sid, evs in sessions.items():
+        own = [tasks.get((e["repo"], b)) if b else None for e, b in zip(evs, branches[sid])]
         target = []
         for i, t in enumerate(own):
             if t is None:
@@ -646,15 +708,16 @@ def search(con, q, limit=20):
             if t[field] and q.lower() in t[field].lower():
                 hit(tid, 3 if field != "note" else 2, kind, t[field])
                 break
+    branches = session_branches(con)
     for r in con.execute("SELECT repo, branch, sha, subject FROM events WHERE kind='agent' AND subject LIKE ? ESCAPE '\\'",
                          ("prompt|" + like,)):
         title = r["subject"].partition("|")[2]
         sid = r["sha"]
         owner = next((tid for tid, t in tasks.items() if t["session"] == sid), None)
         if sid in folded or owner is None:  # the session worked on a branch: credit that branch's card
-            for e in con.execute("SELECT repo, branch FROM events WHERE kind='agent' AND sha=? ORDER BY ts DESC", (sid,)):
-                if e["branch"] and not is_base(e["branch"]) and (e["repo"], e["branch"]) in by_branch:
-                    owner = by_branch[(e["repo"], e["branch"])]
+            for b in reversed(branches.get(sid, [])):
+                if b and (r["repo"], b) in by_branch:
+                    owner = by_branch[(r["repo"], b)]
                     break
         if owner is not None:
             hit(owner, 2, "agent prompt", title)

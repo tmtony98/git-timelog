@@ -264,6 +264,20 @@ class CliTest(unittest.TestCase):
         self.assertEqual([t["branch"] for t in tasks], ["fix/cart"])  # session card folded in
         self.assertAlmostEqual(tasks[0]["hours"], 2460 / 3600, places=2)  # overlap not double-counted
 
+    def test_sessions_sharing_a_folder_keep_their_own_branch(self):
+        self.tl("init", "--days", "0")
+        self.git_event(0, "checkout", "feat/a", "from:main")
+        self.agent(60, "feat/a", "s-X", "prompt|build feature a")
+        self.agent(600, "feat/a", "s-X", "stop")
+        self.agent(700, "feat/a", "s-Y", "prompt|fix bug b")
+        self.git_event(800, "checkout", "feat/b", "from:feat/a")  # s-Y switched the folder's branch
+        self.agent(1200, "feat/b", "s-Y", "stop")
+        self.agent(1300, "feat/b", "s-X", "prompt")          # s-X now sees feat/b but is still on a
+        self.agent(1800, "feat/b", "s-X", "stop")
+        sessions = {b: [s["id"] for s in self.detail(self.task_id(branch=b))["sessions"]]
+                    for b in ("feat/a", "feat/b")}
+        self.assertEqual(sessions, {"feat/a": ["s-X"], "feat/b": ["s-Y"]})
+
     def test_research_only_session_gets_its_own_card(self):
         self.tl("init", "--days", "0")
         self.agent(0, "main", "s-B", "prompt|how does auth work")
