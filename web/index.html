@@ -43,6 +43,13 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 .kpi .v { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
 .kpi .l { color: var(--muted); font-size: 12px; }
 .panel { padding: 16px; margin-bottom: 20px; }
+.shared { border: 1px solid var(--warn); border-left-width: 4px; border-radius: 8px; padding: 10px 12px;
+  margin: 0 0 12px; font-size: 13px; line-height: 1.5; }
+.shared b { color: var(--warn); }
+.shared ul { margin: 4px 0 6px; padding-left: 18px; }
+.shared code { font-size: 12px; }
+.shared .m { color: var(--muted); }
+.dt-shared { color: var(--warn); font-size: 12px; margin-top: 6px; }
 .board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .col { background: var(--bg); border-radius: 10px; padding: 10px; min-height: 120px; border: 1px dashed transparent; }
 .col.over { border-color: var(--accent); }
@@ -238,6 +245,7 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
       <select id="addRepo"></select>
       <button class="primary">Add</button>
     </form>
+    <div id="shared" role="status"></div>
     <div class="board" id="board"></div>
   </section>
 
@@ -445,6 +453,10 @@ document.addEventListener("keydown", (e) => {  // "/" focuses search, like GitHu
 
 // ---- task detail modal: where this task's time came from ----
 let detailId = null, detailOpener = null;
+function sharedWith(sid) {  // how many other open sessions share this session's folder
+  const f = (data.shared_folders || []).find(f => f.sessions.some(s => s.id === sid));
+  return f ? f.sessions.length - 1 : 0;
+}
 const AGENT_NAMES = {claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", cursor: "Cursor"};
 const TERM_ICON = `<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3M12 15h5"/></svg>`;
 const COPY_ICON = `<svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
@@ -470,7 +482,8 @@ async function openDetail(id, opener) {
         ? `<button class="primary" data-open="${esc(s.id)}" aria-label="Open a terminal that resumes this ${esc(name)} session">${TERM_ICON}Open in ${esc(name)}</button>
            <button data-copy="${esc(s.resume)}" aria-label="Copy the command that resumes this ${esc(name)} session">${COPY_ICON}Copy command</button>`
         : `<button class="primary" disabled aria-describedby="why-${esc(s.id)}">${TERM_ICON}Open in ${esc(s.agent ? name : "agent")}</button>`}</div>
-      ${why ? `<div class="dt-why" id="why-${esc(s.id)}">${esc(why)}</div>` : ""}</li>`; }).join("");
+      ${why ? `<div class="dt-why" id="why-${esc(s.id)}">${esc(why)}</div>` : ""}
+      ${sharedWith(s.id) ? `<div class="dt-shared">Shares its folder with ${plural(sharedWith(s.id), "other open session")}: give it its own worktree so its time stays on this task.</div>` : ""}</li>`; }).join("");
   const commits = d.commits.map(c => `<li><div class="l1"><code>${esc(c.sha.slice(0, 7))}</code><span class="grow">${esc(c.subject)}</span></div>
       <div class="l2">${when(c.ts)} · ${ago(c.ts)}</div></li>`).join("");
   const entries = d.entries.map(e => `<li><div class="l1"><span class="grow">${e.note ? esc(e.note) : (e.source === "timer" ? "Timer" : "Logged time")}</span><span class="n">${dur(e.end - e.start)}${e.running ? " ⏱" : ""}</span></div>
@@ -544,6 +557,7 @@ function slice() {
     ...data, kpi: p.kpi, analytics: p.analytics, repos: p.repos, tasks,
     days: data.days.map(d => ({date: d.date, tasks: Object.fromEntries(Object.entries(d.tasks).filter(([id]) => ids.has(id)))})),
     activity: data.activity.filter(e => e.project === project),
+    shared_folders: (data.shared_folders || []).filter(f => f.project === project),
   };
 }
 
@@ -576,6 +590,15 @@ function render() {
   data.days.forEach(d => Object.entries(d.tasks).forEach(([id, h]) => chartHours[id] = (chartHours[id] || 0) + h));
   const colorOf = {};
   Object.entries(chartHours).sort((a, b) => b[1] - a[1]).forEach(([id], i) => colorOf[id] = COLORS[Math.min(i, 7)]);
+
+  $("shared").innerHTML = (data.shared_folders || []).map(f => {
+    const name = f.folder.split("/").filter(Boolean).pop();
+    const rows = f.sessions.map(s => `<li>${s.title ? esc(s.title) : "<span class='m'>(no title)</span>"} <span class="m">· ${s.branch ? esc(s.branch) : "no branch yet"} · <code>${esc(s.id.slice(0, 8))}</code></span></li>`).join("");
+    return `<div class="shared"><b>${f.sessions.length} agent sessions are open in one folder</b> <code>${esc(f.folder)}</code>
+      <ul>${rows}</ul>
+      A folder has one branch checked out, so a branch switch in one session moves the others and their unsaved edits with it.
+      Give each session its own worktree: <code>git worktree add ../${esc(name)}-&lt;name&gt; -b &lt;type&gt;/&lt;name&gt;</code>, then start the agent there.</div>`;
+  }).join("");
 
   $("board").innerHTML = STATUSES.map(s => {
     const items = data.tasks.filter(t => t.status === s);

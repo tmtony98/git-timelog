@@ -551,6 +551,36 @@ def session_branches(con, sessions=None):
     return out
 
 
+def shared_folders(con):
+    """Folders where two or more agent sessions are open right now.
+
+    One folder has one checked-out branch, so when several sessions work there, a branch switch
+    by one moves the others (and their uncommitted edits) onto it. Each one belongs in its own
+    git worktree. A session counts as open until it ends or goes quiet for session_gap_min.
+    """
+    since = now() - int(C["session_gap_min"]) * 60
+    branches = session_branches(con)
+    groups, tops = {}, {}
+    for sid, evs in agent_sessions(con).items():
+        last = evs[-1]
+        if last["ts"] < since or last["subject"] == "end":
+            continue
+        cwd = con.execute("SELECT cwd FROM events WHERE kind='agent' AND sha=? AND cwd IS NOT NULL "
+                          "ORDER BY ts DESC LIMIT 1", (sid,)).fetchone()
+        cwd = cwd[0] if cwd else None
+        if not cwd:
+            continue
+        if cwd not in tops:  # sessions in subfolders of one checkout share it
+            top = git(cwd, "rev-parse", "--show-toplevel").strip() if os.path.isdir(cwd) else ""
+            tops[cwd] = top or cwd
+        title = next((e["subject"].partition("|")[2] for e in evs if e["subject"].partition("|")[2]), None)
+        groups.setdefault(tops[cwd], []).append({
+            "id": sid, "repo": last["repo"], "branch": next((b for b in reversed(branches[sid]) if b), None),
+            "title": title if C["agent_titles"].strip().lower() != "off" else None, "last": last["ts"]})
+    return [{"folder": f, "repo": ss[0]["repo"], "sessions": sorted(ss, key=lambda x: -x["last"])}
+            for f, ss in sorted(groups.items()) if len(ss) > 1]
+
+
 def folded_sessions(con):
     """Sessions that worked on a feature branch: their research time belongs to that branch's task."""
     return {sid for sid, branches in session_branches(con).items() if any(branches)}
@@ -911,6 +941,7 @@ def summary(con):
         "activity": [{**dict(r), "project": project_of(r["repo"], table)}
                      for r in con.execute("SELECT * FROM events WHERE kind != 'agent' ORDER BY ts DESC LIMIT 300")],
         "timer": dict(timer) if timer else None,
+        "shared_folders": [{**f, "project": project_of(f["repo"], table)} for f in shared_folders(con)],
     }
 
 

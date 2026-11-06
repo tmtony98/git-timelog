@@ -301,11 +301,22 @@ Branch rule (one task = one branch):
 - If you're already on a feature branch, check that it matches the current task.
   If the task is different, create or switch to the right branch instead of mixing work.
 - Commit and switch branches only after saving or stashing your changes.
-- To run several agents on the same repo at once, give each its own worktree:
-  `git worktree add ../<repo>-<name> -b <type>/<name>`
+- Other agent sessions may be working in this same folder. Before switching or creating a
+  branch, run `git worktree list` and `git status`. If the folder has changes that aren't
+  yours, or another session could be using it, don't switch here: give your task its own
+  worktree and work only inside it:
+  `git worktree add ../<repo>-<name> -b <type>/<name>` then `cd ../<repo>-<name>`
+  (copy over untracked files the project needs, such as `.env`, and install dependencies).
 ```
 
-This is a request, not a lock: an agent can ignore it. A new terminal doesn't always mean a new
+**Running several sessions at once? One worktree each.** A folder has one branch checked out, so
+when one session switches branch, every other session in that folder (and its unsaved edits)
+moves with it. The dashboard warns when two or more open sessions share a folder, and each of
+their cards says so. git timelog keeps each session's time on the branch *it* switched to, but
+only separate worktrees keep the code apart. Claude Code can make one for you:
+`claude --worktree <name>`.
+
+The branch rule is a request, not a lock: an agent can ignore it. A new terminal doesn't always mean a new
 task, so the rule asks the agent to decide from the task at hand.
 
 ## How time is estimated

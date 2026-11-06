@@ -278,6 +278,22 @@ class CliTest(unittest.TestCase):
                     for b in ("feat/a", "feat/b")}
         self.assertEqual(sessions, {"feat/a": ["s-X"], "feat/b": ["s-Y"]})
 
+    def test_open_sessions_sharing_a_folder_are_flagged(self):
+        self.tl("init", "--days", "0")
+        sub = self.repo / "src"
+        sub.mkdir()
+        wt = Path(self.tmp.name) / "shop-web-b"
+        self.git("worktree", "add", "-q", str(wt), "-b", "feat/b")
+        ts = int(time.time()) - 60
+        rows = [("s-1", "feat/a", self.repo, "prompt|one"), ("s-2", "feat/a", sub, "prompt|two"),
+                ("s-3", "feat/b", wt, "prompt|three"), ("s-4", "feat/a", self.repo, "end")]
+        with open(Path(self.env["GIT_TIMELOG_HOME"]) / "events.log", "a") as f:
+            for i, (sid, branch, cwd, what) in enumerate(rows):
+                f.write(f"{ts + i}\tagent\tshop-web\t{branch}\t{sid}\t{what}\tclaude\t{cwd}\n")
+        (shared,) = self.summary()["shared_folders"]  # s-3 has its own worktree, s-4 ended
+        self.assertEqual(Path(shared["folder"]).resolve(), self.repo.resolve())
+        self.assertEqual(sorted(s["id"] for s in shared["sessions"]), ["s-1", "s-2"])
+
     def test_research_only_session_gets_its_own_card(self):
         self.tl("init", "--days", "0")
         self.agent(0, "main", "s-B", "prompt|how does auth work")
