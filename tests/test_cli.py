@@ -4,6 +4,7 @@ Run with: python3 -m unittest discover tests
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -298,7 +299,8 @@ class CliTest(unittest.TestCase):
         self.tl("init", "--days", "0")
         cfg = Path(self.env["GIT_TIMELOG_CONFIG"])
         gone = Path(self.tmp.name) / "deleted-repo"
-        cfg.write_text(cfg.read_text().replace(f"repos = {self.repo}", f"repos = {self.repo},{gone}"))
+        # append to the repos line as written (macOS stores /private/var/... for temp dirs)
+        cfg.write_text(re.sub(r"(?m)^(repos = .*)$", lambda m: f"{m.group(1)},{gone}", cfg.read_text(), count=1))
         names = [p["name"] for p in self.summary()["projects"]]
         self.assertEqual(names, ["shop-web"])  # the deleted folder makes no tab
         self.assertIn("folder gone", self.tl("repos").stdout)
@@ -309,7 +311,9 @@ class CliTest(unittest.TestCase):
             "l.exec_module(m); print(json.dumps([m.untrack_project('deleted-repo'), m.untrack_project('shop-web')]))"
         )
         out = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True, check=True)
-        self.assertEqual(json.loads(out.stdout), [[str(gone)], [str(self.repo)]])
+        removed = json.loads(out.stdout)
+        self.assertEqual(removed[0], [str(gone)])
+        self.assertEqual([Path(p).resolve() for p in removed[1]], [self.repo.resolve()])
         self.assertIn("no repos tracked", self.tl("repos").stdout)
         self.assertNotIn("git-timelog", (self.repo / ".git/hooks/post-commit").read_text()
                          if (self.repo / ".git/hooks/post-commit").exists() else "")
