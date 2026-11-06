@@ -9,7 +9,9 @@ Usage: git timelog <command>   (run `git timelog -h` for the list)
 """
 import argparse
 import configparser
+import contextlib
 import datetime as dt
+import io
 import json
 import os
 import random
@@ -910,7 +912,7 @@ def summary(con):
                 "active": sum(1 for t in tasks if mine(t["id"]) and t["status"] == "doing"),
                 "commits_week": sum(n for p, n in wk_commits.items() if project is None or p == project)}
 
-    tracked = {repo_name(r) for r in repos()}
+    tracked = {repo_name(r) for r in repos() if r.is_dir()}  # a removed worktree or folder has no tab
     names = list(table) + sorted(({t["project"] for t in tasks} | {project_of(r, table) for r in tracked})
                                  - set(table) - {GENERAL})
     if any(t["project"] == GENERAL for t in tasks):
@@ -935,7 +937,8 @@ def summary(con):
     return {
         "title": C["title"], "version": __version__,
         "kpi": kpi(), "analytics": analytics(),
-        "projects": [{"name": n, "repos": members[n], "kpi": kpi(n), "analytics": analytics(n)} for n in names],
+        "projects": [{"name": n, "repos": members[n], "kpi": kpi(n), "analytics": analytics(n),
+                      "tracked": any(project_of(r, table) == n for r in tracked)} for n in names],
         "repos": sorted(tracked | {t["repo"] for t in tasks if t["repo"]}),
         "tasks": tasks, "days": days,
         "activity": [{**dict(r), "project": project_of(r["repo"], table)}
@@ -1204,6 +1207,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "DELETE" and m:
                 delete_task(con, int(m.group(1)))
                 return self.send(200, {"ok": True})
+            if method == "POST" and p == "/api/untrack":
+                return self.send(200, {"removed": untrack_project(str(self.body().get("project", "")))})
             if method == "POST" and p == "/api/timer":
                 b = self.body()
                 timer_start(con, int(b["task_id"])) if b.get("action") == "start" else timer_stop(con)
@@ -1452,7 +1457,28 @@ def install_hooks(hooks_dir):
         f.chmod(0o755)
 
 
+def untrack_project(project):
+    """Stop tracking every repo folder in a dashboard project, including folders that are gone.
+
+    Tasks and their time stay; the tab remains only while the project still has tasks."""
+    table = projects()
+    gone = []
+    for r in repos():
+        name = repo_name(r) if r.is_dir() else r.name
+        if project_of(name, table) == project:
+            with contextlib.redirect_stdout(io.StringIO()):
+                remove_repo(r)
+            gone.append(str(r))
+    return gone
+
+
 def remove_repo(path):
+    if not Path(path).is_dir():  # already deleted (e.g. a removed worktree): just forget it
+        C["repos"] = ",".join(str(p) for p in repos() if str(p) != str(path))
+        save_conf()
+        sync_hook_files()
+        print(f"stopped tracking {path}")
+        return
     top = git(path, "rev-parse", "--show-toplevel").strip() or str(Path(path).resolve())
     hooks_dir = Path(git(top, "rev-parse", "--git-path", "hooks").strip() or ".git/hooks")
     if not hooks_dir.is_absolute():
@@ -1568,7 +1594,8 @@ def main():
     if a.cmd == "remove":
         return remove_repo(a.path)
     if a.cmd == "repos":
-        print("\n".join(str(r) for r in repos()) or "no repos tracked; run `git timelog init` inside one")
+        print("\n".join(str(r) + ("" if r.is_dir() else "  (folder gone: git timelog remove " + str(r) + ")")
+                        for r in repos()) or "no repos tracked; run `git timelog init` inside one")
         return
     if a.cmd == "serve":
         return serve(a.port)

@@ -51,7 +51,7 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 .shared .m { color: var(--muted); }
 .dt-shared { color: var(--warn); font-size: 12px; margin-top: 6px; }
 .board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.col { background: var(--bg); border-radius: 10px; padding: 10px; min-height: 120px; border: 1px dashed transparent; }
+.col { min-width: 0; background: var(--bg); border-radius: 10px; padding: 10px; min-height: 120px; border: 1px dashed transparent; }
 .col.over { border-color: var(--accent); }
 .col h3 { margin: 0 0 8px; font-size: 13px; display: flex; justify-content: space-between; color: var(--muted); font-weight: 600; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 8px; cursor: grab; }
@@ -201,12 +201,14 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
 .card .acts .del { margin-left: auto; }
 .card .acts .del:hover, .card .acts .del.armed { color: #fff; background: #c0392b; border-color: #c0392b; }
 @media (max-width: 900px) {
-  .kpis { grid-template-columns: repeat(2, 1fr); }
-  .board { grid-template-columns: repeat(2, 1fr); }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid2 { grid-template-columns: 1fr; }
 }
-@media (max-width: 520px) { .board { grid-template-columns: 1fr; } }
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -4px 0 20px; overflow-x: auto; }
+@media (max-width: 520px) { .board { grid-template-columns: minmax(0, 1fr); } }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -4px 0 20px; overflow-x: auto;
+  scrollbar-width: none; }  /* still scrolls by wheel, trackpad and touch when there are many projects */
+.tabs::-webkit-scrollbar { display: none; }
 .tab { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 14px 9px;
   color: var(--muted); white-space: nowrap; display: flex; gap: 8px; align-items: baseline; }
 .tab:hover { color: var(--ink); border-color: var(--line); }
@@ -215,6 +217,8 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
 .projhead { display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px; }
 .projhead h2 { font-size: 20px; text-transform: none; letter-spacing: -0.01em; color: var(--ink); margin: 0; }
 .projhead span { color: var(--muted); font-size: 13px; }
+.projhead .untrack { margin-left: auto; display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--muted); }
+.projhead .untrack button { font-size: 13px; padding: 4px 10px; }
 </style>
 </head>
 <body>
@@ -234,7 +238,7 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
   </header>
 
   <nav class="tabs" id="tabs" role="tablist" aria-label="Projects"></nav>
-  <div class="projhead"><h2 id="projName"></h2><span id="projRepos"></span></div>
+  <div class="projhead"><h2 id="projName"></h2><span id="projRepos"></span><div class="untrack" id="untrack"></div></div>
 
   <section class="kpis" id="kpis"></section>
 
@@ -561,6 +565,25 @@ function slice() {
   };
 }
 
+function renderUntrack(asking) {
+  const p = data.projects.find(x => x.name === project), box = $("untrack");
+  if (!p || !p.tracked) { box.innerHTML = ""; return; }
+  box.innerHTML = asking
+    ? `<span>Stop tracking ${esc(project)}? Its tasks and hours are kept.</span>
+       <button class="primary" data-untrack-yes>Stop tracking</button><button data-untrack-no>Cancel</button>`
+    : `<button data-untrack aria-label="Stop tracking the ${esc(project)} repos">Stop tracking</button>`;
+  const q = s => box.querySelector(s);
+  if (q("[data-untrack]")) q("[data-untrack]").onclick = () => { renderUntrack(true); q("[data-untrack-no]").focus(); };
+  if (q("[data-untrack-no]")) q("[data-untrack-no]").onclick = () => renderUntrack(false);
+  if (q("[data-untrack-yes]")) q("[data-untrack-yes]").onclick = async () => {
+    try {
+      const r = await api("/api/untrack", "POST", {project});
+      toast(`Stopped tracking ${r.removed.length === 1 ? r.removed[0] : r.removed.length + " folders"}`);
+    } catch (e) { toast("Couldn't stop tracking: " + e.message); }
+    load();
+  };
+}
+
 function renderTabs() {
   const tabs = data.projects.map(p => ({name: p.name, kpi: p.kpi})).concat([{name: ALL, kpi: data.kpi}]);
   $("tabs").innerHTML = tabs.map(t => `<button class="tab" role="tab" aria-selected="${t.name === project}" data-p="${esc(t.name)}">
@@ -568,6 +591,7 @@ function renderTabs() {
   $("tabs").querySelectorAll(".tab").forEach(b => b.onclick = () => setProject(b.dataset.p));
   $("projName").textContent = project;
   $("projRepos").textContent = view.repos.length === 1 && view.repos[0] === project ? "" : view.repos.join(" · ");
+  renderUntrack(false);
   $("tableTitle").textContent = project === ALL ? "All tasks" : `All ${project} tasks`;
   const sel = $("addRepo"), keep = sel.value;
   sel.innerHTML = view.repos.map(r => `<option>${esc(r)}</option>`).join("") + '<option value="">no repo</option>';

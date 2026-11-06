@@ -294,6 +294,26 @@ class CliTest(unittest.TestCase):
         self.assertEqual(Path(shared["folder"]).resolve(), self.repo.resolve())
         self.assertEqual(sorted(s["id"] for s in shared["sessions"]), ["s-1", "s-2"])
 
+    def test_deleted_folder_has_no_tab_and_a_project_can_be_untracked(self):
+        self.tl("init", "--days", "0")
+        cfg = Path(self.env["GIT_TIMELOG_CONFIG"])
+        gone = Path(self.tmp.name) / "deleted-repo"
+        cfg.write_text(cfg.read_text().replace(f"repos = {self.repo}", f"repos = {self.repo},{gone}"))
+        names = [p["name"] for p in self.summary()["projects"]]
+        self.assertEqual(names, ["shop-web"])  # the deleted folder makes no tab
+        self.assertIn("folder gone", self.tl("repos").stdout)
+        code = (
+            "import importlib.machinery, importlib.util, json;"
+            f"l = importlib.machinery.SourceFileLoader('gtl', {str(CLI)!r});"
+            "s = importlib.util.spec_from_loader('gtl', l); m = importlib.util.module_from_spec(s);"
+            "l.exec_module(m); print(json.dumps([m.untrack_project('deleted-repo'), m.untrack_project('shop-web')]))"
+        )
+        out = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(out.stdout), [[str(gone)], [str(self.repo)]])
+        self.assertIn("no repos tracked", self.tl("repos").stdout)
+        self.assertNotIn("git-timelog", (self.repo / ".git/hooks/post-commit").read_text()
+                         if (self.repo / ".git/hooks/post-commit").exists() else "")
+
     def test_research_only_session_gets_its_own_card(self):
         self.tl("init", "--days", "0")
         self.agent(0, "main", "s-B", "prompt|how does auth work")
