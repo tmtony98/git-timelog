@@ -120,7 +120,7 @@ def repo_name(repo):
 
 
 def is_base(branch):
-    if not branch or branch.startswith("refs/") or re.fullmatch(r"[0-9a-f]{7,40}", branch):
+    if not branch or branch.startswith(("refs/", "@{")) or re.fullmatch(r"[0-9a-f]{7,40}", branch):
         return True  # stash/tag refs, detached HEAD
     return any(fnmatch(branch, p.strip()) for p in C["base_branches"].split(","))
 
@@ -259,8 +259,8 @@ def add_agent_event(con, ts, repo, branch, sid, subject, live, agent="", cwd="")
 def add_event(con, ts, kind, repo, branch, sha, subject, live=False, agent="", cwd=""):
     if kind == "agent":
         return add_agent_event(con, ts, repo, branch, sha, subject, live, agent, cwd)
-    con.execute("INSERT OR IGNORE INTO events(ts, kind, repo, branch, sha, subject) VALUES(?,?,?,?,?,?)",
-                (ts, kind, repo, branch, sha, subject))
+    con.execute("INSERT OR IGNORE INTO events(ts, kind, repo, branch, sha, subject, cwd) VALUES(?,?,?,?,?,?,?)",
+                (ts, kind, repo, branch, sha, subject, cwd or None))
     ensure_task(con, repo, branch, ts)
     if kind == "checkout" and subject.startswith("from:"):
         ensure_task(con, repo, subject[5:], ts)
@@ -327,6 +327,7 @@ def mark_merged(con, only=None):
         if name in seen:
             continue
         seen.add(name)
+        follow_renames(con, repo, name)
         remotes = git(repo, "remote").split()
         bases = []
         for ref in git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes").split():
@@ -364,6 +365,43 @@ def mark_merged(con, only=None):
                 con.execute("UPDATE tasks SET status='done' WHERE repo=? AND branch=?", (name, branch))
     mark_idle(con)
     con.execute("INSERT OR REPLACE INTO meta VALUES('merged_check', ?)", (str(now()),))
+
+
+RENAMED = re.compile(r"Branch: renamed refs/heads/(.+) to refs/heads/(.+)$")
+
+
+def follow_renames(con, repo, name):
+    """Move a task to its branch's new name after `git branch -m`, which runs no git hook.
+
+    Each worktree's HEAD log records renames of the branch checked out there.
+    """
+    worktrees = [ln[9:] for ln in git(repo, "worktree", "list", "--porcelain").splitlines()
+                 if ln.startswith("worktree ")] or [str(repo)]
+    for wt in worktrees:
+        for line in reversed(git(wt, "reflog", "-n", "200", "--format=%gs").splitlines()):
+            m = RENAMED.match(line)
+            if not m or git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/" + m.group(1)).strip():
+                continue  # not a rename, or the old name is back in use
+            rename_task(con, name, m.group(1), m.group(2))
+
+
+def rename_task(con, repo, old, new):
+    t = con.execute("SELECT id, title FROM tasks WHERE repo=? AND branch=?", (repo, old)).fetchone()
+    if t is None or is_base(new):
+        return
+    con.execute("UPDATE OR IGNORE events SET branch=? WHERE repo=? AND branch=?", (new, repo, old))
+    con.execute("DELETE FROM events WHERE repo=? AND branch=?", (repo, old))  # exact duplicates only
+    con.execute("UPDATE events SET subject=? WHERE repo=? AND kind='checkout' AND subject=?",
+                ("from:" + new, repo, "from:" + old))
+    other = con.execute("SELECT id FROM tasks WHERE repo=? AND branch=?", (repo, new)).fetchone()
+    if other is None:
+        con.execute("UPDATE tasks SET branch=?, title=CASE WHEN title=? THEN ? ELSE title END WHERE id=?",
+                    (new, old, new, t["id"]))
+    else:  # something already happened under the new name: fold the old card into it
+        con.execute("UPDATE entries SET task_id=? WHERE task_id=?", (other["id"], t["id"]))
+        if t["title"] != old:
+            con.execute("UPDATE tasks SET title=? WHERE id=? AND title=branch", (t["title"], other["id"]))
+        con.execute("DELETE FROM tasks WHERE id=?", (t["id"],))
 
 
 def git_pipe(repo, data, *args):
@@ -485,25 +523,51 @@ def git_intervals(con, tasks):
 def agent_sessions(con):
     """{session id: [event rows in time order]} for coding-agent sessions."""
     out = {}
-    for e in con.execute("SELECT ts, repo, branch, sha, subject FROM events WHERE kind='agent' ORDER BY ts"):
+    for e in con.execute("SELECT ts, repo, branch, sha, subject, cwd FROM events WHERE kind='agent' ORDER BY ts"):
         out.setdefault(e["sha"], []).append(e)
     return out
 
 
-def session_branches(con, sessions=None):
-    """{session id: [the branch the session was working on at each of its events, or None]}.
+_TOPS = {}
 
-    Agents report the branch checked out in their folder, and several sessions often share one
-    folder, so when one session switches branch every other session there starts reporting the
-    new branch too. A session's branch therefore only changes on a checkout *it* made: one that
-    happened during its own turn (after its prompt, before its reply), or, when it was the only
-    session open in that folder, any checkout. Its next event must show the new branch, which
-    keeps checkouts made in another worktree of the same repo from counting.
+
+def checkout_top(folder):
+    """The worktree a folder belongs to (cached: it doesn't change while a folder exists)."""
+    if not folder:
+        return None
+    if folder not in _TOPS:
+        top = git(folder, "rev-parse", "--show-toplevel").strip() if os.path.isdir(folder) else ""
+        _TOPS[folder] = top or folder
+    return _TOPS[folder]
+
+
+def session_branches(con, sessions=None):
+    """{session id: [the branch the session was working on at each of its events, or None]}."""
+    return session_tracking(con, sessions)[0]
+
+
+def session_tracking(con, sessions=None):
+    """Which branch each agent session was on at each of its events, and which folder it works in.
+
+    Returns ({session id: [branch or None per event]}, {session id: worktree folder or None}).
+
+    Agents report the branch checked out in the folder they were started in. Several sessions
+    often share one folder, so when one switches branch the others start reporting the new
+    branch too; and a session that moved into a new git worktree keeps reporting the folder it
+    was started in. So a session's branch only changes on a checkout *it* made:
+    - in its own folder, during its own turn (after its prompt, before its reply), when its
+      next event shows the new branch; or any such checkout while it was the only session there;
+    - the first checkout of a new worktree (git worktree add), during its turn: the session
+      moved there, and later checkouts in that worktree during its turns are its too.
+    Checkouts logged before the git hook recorded their folder only use the first rule.
     """
     sessions = sessions if sessions is not None else agent_sessions(con)
     checkouts = {}
-    for c in con.execute("SELECT ts, repo, branch FROM events WHERE kind='checkout' ORDER BY ts"):
-        checkouts.setdefault(c["repo"], []).append((c["ts"], c["branch"]))
+    for c in con.execute("SELECT ts, repo, branch, cwd, subject FROM events WHERE kind='checkout' ORDER BY ts"):
+        # a new worktree's first checkout has no previous branch (older hooks wrote "@{-1}")
+        fresh = c["subject"] in ("from:", "from:@{-1}")
+        checkouts.setdefault(c["repo"], []).append((c["ts"], c["branch"], c["cwd"], fresh))
+
     def turns(evs):  # (prompt ts, reply ts): a turn ends at the next stop or prompt, not at start/end
         out = []
         for i, a in enumerate(evs):
@@ -512,25 +576,38 @@ def session_branches(con, sessions=None):
                          evs[-1])
                 out.append((a["ts"], b["ts"]))
         return out
+    place, moved = {}, set()  # session id -> worktree it works in; sessions that moved to another one
+    for sid, evs in sessions.items():
+        place[sid] = checkout_top(next((e["cwd"] for e in evs if e["cwd"]), None))
     owned = {}  # session id -> [(ts, branch)] of checkouts it made
     for repo, cos in checkouts.items():
         here = {sid: evs for sid, evs in sessions.items() if evs[0]["repo"] == repo}
         session_turns = {sid: turns(evs) for sid, evs in here.items()}
-        for ts, branch in cos:
-            def follows(evs):  # the session's next event after the checkout shows the new branch
-                nxt = next((e for e in evs if e["ts"] >= ts), None)
+        for ts, branch, where, fresh in cos:
+            def follows(sid):  # the session's next event after the checkout shows the new branch
+                if sid in moved and where is not None:
+                    return True  # it reports the folder it started in, not the one it moved to
+                nxt = next((e for e in here[sid] if e["ts"] >= ts), None)
                 return nxt is not None and nxt["branch"] == branch
-            in_turn = []
-            for sid, evs in here.items():
-                for start, end in session_turns[sid]:
-                    if start <= ts <= end and follows(evs):
-                        in_turn.append((start, sid))
-            if in_turn:
-                owned.setdefault(max(in_turn)[1], []).append((ts, branch))
-                continue
+            def in_turn(sid):
+                return next((start for start, end in session_turns[sid] if start <= ts <= end), None)
             open_now = [sid for sid, evs in here.items() if evs[0]["ts"] <= ts <= evs[-1]["ts"]]
-            if len(open_now) == 1 and follows(here[open_now[0]]):
-                owned.setdefault(open_now[0], []).append((ts, branch))
+            local = [sid for sid in here if where is None or place[sid] in (None, where)]
+            mine = [(in_turn(sid), sid) for sid in local if in_turn(sid) is not None and follows(sid)]
+            if mine:
+                owned.setdefault(max(mine)[1], []).append((ts, branch))
+                continue
+            alone = [sid for sid in open_now if sid in local]
+            if len(alone) == 1 and follows(alone[0]):
+                owned.setdefault(alone[0], []).append((ts, branch))
+                continue
+            if fresh and not any(where is not None and place[sid] == where for sid in open_now):
+                movers = [(in_turn(sid), sid) for sid in open_now if in_turn(sid) is not None]
+                if movers:  # a new worktree, made during this session's turn: it moved there
+                    sid = max(movers)[1]
+                    owned.setdefault(sid, []).append((ts, branch))
+                    place[sid] = where or f"(new worktree for {branch})"  # older hooks didn't say where
+                    moved.add(sid)
     commits = {}
     for c in con.execute("SELECT ts, repo, branch FROM events WHERE kind='commit'"):
         commits.setdefault((c["repo"], c["branch"]), []).append(c["ts"])
@@ -550,7 +627,7 @@ def session_branches(con, sessions=None):
                 k += 1
             eff.append(home)
         out[sid] = eff
-    return out
+    return out, place
 
 
 def shared_folders(con):
@@ -561,22 +638,18 @@ def shared_folders(con):
     git worktree. A session counts as open until it ends or goes quiet for session_gap_min.
     """
     since = now() - int(C["session_gap_min"]) * 60
-    branches = session_branches(con)
-    groups, tops = {}, {}
-    for sid, evs in agent_sessions(con).items():
+    sessions = agent_sessions(con)
+    branches, place = session_tracking(con, sessions)
+    groups = {}
+    for sid, evs in sessions.items():
         last = evs[-1]
         if last["ts"] < since or last["subject"] == "end":
             continue
-        cwd = con.execute("SELECT cwd FROM events WHERE kind='agent' AND sha=? AND cwd IS NOT NULL "
-                          "ORDER BY ts DESC LIMIT 1", (sid,)).fetchone()
-        cwd = cwd[0] if cwd else None
-        if not cwd:
+        top = place[sid]  # its worktree (sessions in subfolders of one checkout share it)
+        if not top:
             continue
-        if cwd not in tops:  # sessions in subfolders of one checkout share it
-            top = git(cwd, "rev-parse", "--show-toplevel").strip() if os.path.isdir(cwd) else ""
-            tops[cwd] = top or cwd
         title = next((e["subject"].partition("|")[2] for e in evs if e["subject"].partition("|")[2]), None)
-        groups.setdefault(tops[cwd], []).append({
+        groups.setdefault(top, []).append({
             "id": sid, "repo": last["repo"], "branch": next((b for b in reversed(branches[sid]) if b), None),
             "title": title if C["agent_titles"].strip().lower() != "off" else None, "last": last["ts"]})
     return [{"folder": f, "repo": ss[0]["repo"], "sessions": sorted(ss, key=lambda x: -x["last"])}

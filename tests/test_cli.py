@@ -318,6 +318,53 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("git-timelog", (self.repo / ".git/hooks/post-commit").read_text()
                          if (self.repo / ".git/hooks/post-commit").exists() else "")
 
+    def test_session_that_moves_into_a_new_worktree_follows_it(self):
+        self.tl("init", "--days", "0")
+        log = Path(self.env["GIT_TIMELOG_HOME"]) / "events.log"
+        wt = Path(self.tmp.name) / "shop-web-buyer"
+        t0 = int(time.time()) - 3 * 3600
+
+        def line(off, kind, branch, sid, subject, cwd):
+            with open(log, "a") as f:
+                agent = "claude" if kind == "agent" else ""
+                f.write(f"{t0 + off}\t{kind}\tshop-web\t{branch}\t{sid}\t{subject}\t{agent}\t{cwd}\n")
+        line(0, "agent", "main", "s-M", "prompt|auto-create buyer account", self.repo)
+        line(30, "checkout", "feat/buyer", "abc1234", "from:", wt)   # git worktree add, in s-M's turn
+        line(600, "agent", "main", "s-M", "stop", self.repo)         # still reports the folder it started in
+        line(700, "agent", "main", "s-M", "prompt", self.repo)
+        line(800, "checkout", "feat/other", "abc1234", "from:main", self.repo)  # someone else, in the old folder
+        line(1300, "agent", "feat/other", "s-M", "stop", self.repo)
+        (sess,) = self.detail(self.task_id(branch="feat/buyer"))["sessions"]
+        self.assertEqual((sess["id"], sess["seconds"]), ("s-M", 1300))  # every turn, including the one after the other checkout
+        self.assertEqual(self.detail(self.task_id(branch="feat/other"))["sessions"], [])
+
+    def test_new_worktree_logged_by_an_older_hook_still_moves_the_session(self):
+        self.tl("init", "--days", "0")
+        self.agent(0, "main", "s-O", "prompt|buyer accounts")
+        self.git_event(30, "checkout", "feat/buyer", "from:@{-1}")  # no folder column, old subject
+        self.agent(600, "main", "s-O", "stop")
+        (sess,) = self.detail(self.task_id(branch="feat/buyer"))["sessions"]
+        self.assertEqual(sess["id"], "s-O")
+        self.assertNotIn("@{-1}", [t["branch"] for t in self.summary()["tasks"]])
+
+    def test_renamed_branch_keeps_its_card(self):
+        self.tl("init", "--days", "0")
+        self.git("checkout", "-q", "-b", "feat/old-name")
+        self.commit("work")
+        self.git("branch", "-m", "feat/new-name")
+        tasks = self.summary()["tasks"]
+        self.assertEqual([t["branch"] for t in tasks], ["feat/new-name"])
+        self.assertEqual((tasks[0]["title"], tasks[0]["commits"]), ("feat/new-name", 1))
+        self.commit("more work")
+        self.assertEqual([(t["branch"], t["commits"]) for t in self.summary()["tasks"]], [("feat/new-name", 2)])
+
+    def test_git_hook_records_the_worktree(self):
+        self.tl("init", "--days", "0")
+        self.git("checkout", "-q", "-b", "feat/x")
+        last = (Path(self.env["GIT_TIMELOG_HOME"]) / "events.log").read_text().splitlines()[-1].split("\t")
+        self.assertEqual((last[1], last[3], len(last)), ("checkout", "feat/x", 8))
+        self.assertEqual(Path(last[7]).resolve(), self.repo.resolve())
+
     def test_research_only_session_gets_its_own_card(self):
         self.tl("init", "--days", "0")
         self.agent(0, "main", "s-B", "prompt|how does auth work")

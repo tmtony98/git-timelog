@@ -12,7 +12,7 @@
   case "$name" in
     post-checkout)
       [ "$3" = "1" ] || exit 0            # file checkout, not a branch switch
-      prev=$(git rev-parse --abbrev-ref @{-1} 2>/dev/null)
+      prev=$(git rev-parse --abbrev-ref @{-1} 2>/dev/null) || prev=""   # none yet in a new worktree
       [ "$prev" = "$branch" ] && exit 0
       kind=checkout; subject="from:$prev" ;;
     post-commit) kind=commit; subject=$(git log -1 --format=%s) ;;
@@ -20,6 +20,8 @@
     *) exit 0 ;;
   esac
   subject=${subject//$'\t'/ }
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$kind" "$repo" "$branch" "$sha" "$subject" >> "$log"
+  top=$(git rev-parse --show-toplevel)   # which worktree: tells sessions in different folders apart
+  # columns 7-8 match the agent hook's (agent, folder); git events have no agent
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t\t%s\n' "$(date +%s)" "$kind" "$repo" "$branch" "$sha" "$subject" "$top" >> "$log"
 } 2>/dev/null || true
 exit 0
