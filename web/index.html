@@ -46,7 +46,15 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 .shared { border: 1px solid var(--warn); border-left-width: 4px; border-radius: 8px; padding: 10px 12px;
   margin: 0 0 12px; font-size: 13px; line-height: 1.5; }
 .shared b { color: var(--warn); }
-.shared ul { margin: 4px 0 6px; padding-left: 18px; }
+.shared ul { margin: 8px 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.shared li { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between;
+  padding: 8px 10px; background: var(--bg); border-radius: 6px; }
+.shared li > div:first-child { min-width: 0; flex: 1 1 260px; overflow-wrap: anywhere; }
+.sh-head { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.sh-head code { overflow-wrap: anywhere; }
+.sh-x { margin-left: auto; font-size: 12px; padding: 3px 10px; }
+.sh-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.sh-acts button { font-size: 12px; padding: 4px 10px; display: inline-flex; gap: 6px; align-items: center; }
 .shared code { font-size: 12px; }
 .shared .m { color: var(--muted); }
 .dt-shared { color: var(--warn); font-size: 12px; margin-top: 6px; }
@@ -457,6 +465,28 @@ document.addEventListener("keydown", (e) => {  // "/" focuses search, like GitHu
 
 // ---- task detail modal: where this task's time came from ----
 let detailId = null, detailOpener = null;
+// Shared-folder warning: a worktree name, branch and prompt made from the session's first prompt.
+const STOP = new Set("a an the to of for and or in on at with from by is are be it this that we our my i you can should please".split(" "));
+function worktreeFor(f, s) {
+  const repo = f.folder.split("/").filter(Boolean).pop();
+  const words = (s.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ").filter(w => w && !STOP.has(w));
+  const type = /^(fix|bug|broken|error|crash|wrong)/.test(words[0] || "") || words.some(w => ["fix", "bug", "broken", "crash"].includes(w)) ? "fix" : "feat";
+  const name = words.filter(w => !["fix", "bug"].includes(w)).slice(0, 4).join("-").slice(0, 40).replace(/-+$/, "") || `task-${s.id.slice(0, 6)}`;
+  const dir = `../${repo}-${name}`, branch = `${type}/${name}`;
+  const command = `git worktree add ${dir} -b ${branch}`;
+  const prompt = `Another agent session is working in this same folder (${f.folder}). Before you create a branch or edit anything, move this task into its own git worktree:\n${command}\nThen do all further work only inside ${dir}: copy over untracked files the project needs (such as .env) and install dependencies there. If you're already partway through, commit or stash your changes here first and continue in the worktree.`;
+  return {command, prompt};
+}
+const sharedKey = f => f.folder + "|" + f.sessions.map(s => s.id).sort().join(",");
+function sharedDismissed(f) {  // per browser; a new session in the folder changes the key, so it shows again
+  try { return JSON.parse(localStorage.getItem("gtl-shared-dismissed") || "[]").includes(sharedKey(f)); } catch (_) { return false; }
+}
+function dismissShared(key) {
+  try {
+    const keep = JSON.parse(localStorage.getItem("gtl-shared-dismissed") || "[]").filter(k => (data.shared_folders || []).some(f => sharedKey(f) === k));
+    localStorage.setItem("gtl-shared-dismissed", JSON.stringify([...keep, key]));
+  } catch (_) {}
+}
 function sharedWith(sid) {  // how many other open sessions share this session's folder
   const f = (data.shared_folders || []).find(f => f.sessions.some(s => s.id === sid));
   return f ? f.sessions.length - 1 : 0;
@@ -534,6 +564,22 @@ $("detail").addEventListener("click", async (e) => {
   const text = btn && btn.dataset.copy;
   if (!text) return;
   try { await navigator.clipboard.writeText(text); toast("Copied: " + (text.length > 60 ? text.slice(0, 57) + "…" : text)); }
+  catch (err) { window.prompt("Copy this:", text); }
+});
+
+$("shared").addEventListener("click", async (e) => {
+  const x = e.target.closest("[data-shdismiss]");
+  if (x) {
+    const box = x.closest(".shared");
+    dismissShared(box.dataset.key); box.remove();
+    toast("Warning hidden. It comes back if another session joins that folder.");
+    return;
+  }
+  const btn = e.target.closest("[data-shcopy]");
+  if (!btn) return;
+  const text = btn.dataset.shcopy;
+  try { await navigator.clipboard.writeText(text);
+        toast(btn.dataset.what === "Prompt" ? "Move prompt copied. Paste it into that session." : "Copied: " + text); }
   catch (err) { window.prompt("Copy this:", text); }
 });
 
@@ -615,13 +661,18 @@ function render() {
   const colorOf = {};
   Object.entries(chartHours).sort((a, b) => b[1] - a[1]).forEach(([id], i) => colorOf[id] = COLORS[Math.min(i, 7)]);
 
-  $("shared").innerHTML = (data.shared_folders || []).map(f => {
-    const name = f.folder.split("/").filter(Boolean).pop();
-    const rows = f.sessions.map(s => `<li>${s.title ? esc(s.title) : "<span class='m'>(no title)</span>"} <span class="m">· ${s.branch ? esc(s.branch) : "no branch yet"} · <code>${esc(s.id.slice(0, 8))}</code></span></li>`).join("");
-    return `<div class="shared"><b>${f.sessions.length} agent sessions are open in one folder</b> <code>${esc(f.folder)}</code>
+  $("shared").innerHTML = (data.shared_folders || []).filter(f => !sharedDismissed(f)).map(f => {
+    const rows = f.sessions.map(s => {
+      const w = worktreeFor(f, s);
+      return `<li><div>${s.title ? esc(s.title) : "<span class='m'>(no title yet)</span>"} <span class="m">· ${s.branch ? esc(s.branch) : "no branch yet"} · <code>${esc(s.id.slice(0, 8))}</code></span></div>
+        <div class="sh-acts"><button class="primary" data-shcopy="${esc(w.prompt)}" data-what="Prompt" aria-label="Copy a prompt that moves this session into its own worktree">${COPY_ICON}Copy move prompt</button>
+        <button data-shcopy="${esc(w.command)}" data-what="Command" aria-label="Copy the git worktree command for this session">${COPY_ICON}Copy worktree command</button></div></li>`;
+    }).join("");
+    return `<div class="shared" data-key="${esc(sharedKey(f))}"><div class="sh-head"><b>${f.sessions.length} agent sessions are open in one folder</b> <code>${esc(f.folder)}</code>
+      <button class="sh-x" data-shdismiss aria-label="Dismiss this warning until another session joins the folder">Dismiss</button></div>
       <ul>${rows}</ul>
-      A folder has one branch checked out, so a branch switch in one session moves the others and their unsaved edits with it.
-      Give each session its own worktree: <code>git worktree add ../${esc(name)}-&lt;name&gt; -b &lt;type&gt;/&lt;name&gt;</code>, then start the agent there.</div>`;
+      <span class="m">A folder has one branch checked out, so a branch switch in one session moves the others and their unsaved edits with it.
+      Move all but one session into its own worktree: paste the move prompt into that session, and the agent moves itself.</span></div>`;
   }).join("");
 
   $("board").innerHTML = STATUSES.map(s => {
