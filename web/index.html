@@ -70,6 +70,7 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 #savedBtn { display: inline-flex; gap: 7px; align-items: center; font-size: 13px; padding: 4px 11px; }
 #savedBtn .n { font-variant-numeric: tabular-nums; color: var(--muted); }
 #savedBtn[hidden] { display: none; }
+.badge.bm { color: var(--accent); }
 .sv-list li { cursor: pointer; }
 .sv-list li:hover { border-color: var(--accent); }
 .sv-list .l1 button { font-size: 12px; padding: 3px 10px; flex: none; }
@@ -266,7 +267,7 @@ dialog#detail::backdrop, dialog#savedDlg::backdrop { background: rgba(0,0,0,.45)
 
   <section class="panel">
     <div class="tasks-head"><h2>Tasks</h2>
-      <button id="savedBtn" hidden aria-haspopup="dialog"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Saved for later <span class="n" id="savedN"></span></button></div>
+      <button id="savedBtn" hidden aria-haspopup="dialog" aria-label="Open bookmarked tasks"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Bookmarks <span class="n" id="savedN"></span></button></div>
     <form class="addrow" id="addForm">
       <input id="addTitle" placeholder="New task (non-git work: meeting, design review…)" required>
       <select id="addRepo"></select>
@@ -541,7 +542,7 @@ async function openDetail(id, opener) {
       <div class="l2">${e.source === "timer" ? "timer" : "logged"} · ${when(e.start)}</div></li>`).join("");
   $("dt-content").innerHTML = `
     <div class="dt-head"><div class="row"><h2 id="dt-title">${esc(t.title)}</h2>
-      <button class="dt-rename" data-save aria-pressed="${!!(data.tasks.find(x => x.id === t.id) || {}).saved}">${(data.tasks.find(x => x.id === t.id) || {}).saved ? "★ Saved · move back" : "☆ Save for later"}</button>
+      <button class="dt-rename" data-save aria-pressed="${!!(data.tasks.find(x => x.id === t.id) || {}).saved}">${(data.tasks.find(x => x.id === t.id) || {}).saved ? "★ Bookmarked" : "☆ Bookmark"}</button>
       <button class="dt-rename" data-rename aria-label="Rename this task">Rename</button>
       <button class="dt-close" aria-label="Close" onclick="document.getElementById('detail').close()">×</button></div>
       <div class="sub"><span class="badge">${esc(t.status === "hold" ? "on hold" : t.status)}</span>
@@ -716,7 +717,7 @@ function render() {
   }).join("");
 
   $("board").innerHTML = STATUSES.map(s => {
-    const items = data.tasks.filter(t => t.status === s && !t.saved);  // saved ones live in the folder
+    const items = data.tasks.filter(t => t.status === s);
     const capped = s === "done" && !doneOpen && items.length > DONE_CAP;
     const shown = capped ? items.slice(0, DONE_CAP) : items;
     const more = s === "done" && items.length > DONE_CAP
@@ -770,12 +771,12 @@ function card(t) {
     <div class="t">${esc(t.title)}</div>
     ${t.branch && t.branch !== t.title ? `<div class="br">${esc(t.branch)}</div>` : ""}
     ${t.last_subject ? `<div class="s" title="${esc(t.last_subject)}">${esc(t.last_subject)}</div>` : ""}
-    <div class="meta">${t.session ? `<span class="badge agent" title="Coding-agent session that hasn't touched a branch: research, questions, planning">agent session</span>` : ""}
+    <div class="meta">${t.saved ? `<span class="badge bm" title="Bookmarked">★</span>` : ""}${t.session ? `<span class="badge agent" title="Coding-agent session that hasn't touched a branch: research, questions, planning">agent session</span>` : ""}
       ${t.repo ? `<span class="badge">${esc(t.repo)}</span>` : ""}
       ${t.ticket ? `<span class="badge">${esc(t.ticket)}</span>` : ""}
       ${t.status === "hold" ? `<span class="badge hold" title="${t.held_auto ? "Put on hold automatically: not merged and untouched" : "You put this on hold"}">${t.held_auto && t.last_seen ? "idle " + Math.floor((Date.now() / 1000 - t.last_seen) / 86400) + "d" : "on hold"}</span>` : ""}
       <span class="badge">${ago(t.last)}</span><span class="h">${fmtH(t.hours)}</span></div>
-    <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="rename" aria-label="Rename this task">Rename</button><button data-act="save" aria-pressed="${!!t.saved}" aria-label="${t.saved ? "Remove from saved" : "Save for later"}">${t.saved ? "Unsave" : "Save for later"}</button><button data-act="delete" class="del" title="Delete task">Delete</button></div>
+    <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="rename" aria-label="Rename this task">Rename</button><button data-act="save" aria-pressed="${!!t.saved}" aria-label="${t.saved ? "Remove bookmark" : "Bookmark this task"}">${t.saved ? "★ Bookmarked" : "☆ Bookmark"}</button><button data-act="delete" class="del" title="Delete task">Delete</button></div>
   </div>`;
 }
 
@@ -831,8 +832,8 @@ function renameInline(el, t, host, after) {
 
 async function setSaved(t, on) {
   try { await api(`/api/task/${t.id}`, "PATCH", {saved: on}); }
-  catch (e) { return toast("Couldn't save: " + e.message); }
-  toast(on ? `Moved "${t.title}" to Saved for later` : `"${t.title}" is back on the board`, "Undo", async () => {
+  catch (e) { return toast("Couldn't update the bookmark: " + e.message); }
+  toast(on ? `Bookmarked "${t.title}"` : `Removed bookmark on "${t.title}"`, "Undo", async () => {
     await api(`/api/task/${t.id}`, "PATCH", {saved: !on}); load(); });
   await load();  // also refreshes an open task modal
 }
@@ -850,13 +851,13 @@ function renderSavedDialog() {
   const items = savedTasks();
   if (!items.length && $("savedDlg").open) { $("savedDlg").close(); return; }
   $("sv-content").innerHTML = `
-    <div class="dt-head"><div class="row"><h2 id="sv-title">Saved for later · ${items.length}</h2>
+    <div class="dt-head"><div class="row"><h2 id="sv-title">Bookmarks · ${items.length}</h2>
       <button class="dt-close" aria-label="Close" onclick="document.getElementById('savedDlg').close()">×</button></div>
-      <div class="sub">Tasks you put aside. Open one to see its sessions, or move it back to the board.</div></div>
+      <div class="sub">Tasks you bookmarked. They stay on the board too; open one to see its sessions.</div></div>
     <div class="dt-body"><ul class="dt-list sv-list" style="margin-top:14px">${items.map(t => `
       <li data-sv-open="${t.id}" tabindex="0"><div class="l1"><span class="grow"><b>${esc(t.title)}</b></span><span class="n">${fmtH(t.hours)}</span>
-        <button data-sv-back="${t.id}" aria-label="Move ${esc(t.title)} back to the board">Back to board</button></div>
-        <div class="l2">${esc(t.status === "hold" ? "on hold" : t.status)}${t.repo ? " · " + esc(t.repo) : ""}${t.branch && t.branch !== t.title ? " · " + esc(t.branch) : ""} · saved ${ago(t.saved)}</div></li>`).join("")}</ul></div>`;
+        <button data-sv-back="${t.id}" aria-label="Remove the bookmark on ${esc(t.title)}">Remove</button></div>
+        <div class="l2">${esc(t.status === "hold" ? "on hold" : t.status)}${t.repo ? " · " + esc(t.repo) : ""}${t.branch && t.branch !== t.title ? " · " + esc(t.branch) : ""} · bookmarked ${ago(t.saved)}</div></li>`).join("")}</ul></div>`;
 }
 
 async function editTicket(t) {
