@@ -80,8 +80,10 @@ Because the command is named `git-timelog`, git exposes it as a subcommand: `git
 ## The dashboard
 
 - **Board:** todo · doing · on hold · done. Drag cards between columns; hover a card for
-  Timer, Log time, Edit (ticket, PR link) and Delete (click twice; Undo appears for a few
-  seconds). The done column shows its 8 newest cards, with "Show N more" for the rest.
+  Timer, Log time, Rename and Delete (click twice; Undo appears for a few seconds). Rename edits
+  the name in place (Enter saves, Esc cancels, an empty name goes back to the branch name); the
+  branch stays visible under a renamed card. The done column shows its 8 newest cards, with
+  "Show N more" for the rest.
 - **Search:** press `/` (or click the search box) and type at least two letters. It searches every
   project at once: task names, branches, tickets, notes, commit messages and the first prompt of
   each agent session, so "the one where I asked about Safari" finds its task. Arrow keys and Enter
@@ -116,6 +118,7 @@ Right under the board, for the selected project, this week or the last 4 weeks:
 ### Task details
 
 Click a card (or press Enter on it) to open its details. Escape or a click outside closes them.
+The header has **Rename** and a button to add or edit the ticket and PR link.
 
 ![Task details: total time split by git, agent, timer and logged; agent sessions with their ID, resume command and an Open in Claude Code button; commits](docs/task-details.jpg)
 

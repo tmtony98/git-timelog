@@ -65,6 +65,11 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 8px; cursor: grab; }
 .card:active { cursor: grabbing; }
 .card .t { font-weight: 600; word-break: break-word; }
+.card .br { font-size: 11px; color: var(--muted); margin-top: 2px; word-break: break-all; }
+input.rename { width: 100%; font: inherit; font-weight: 600; padding: 3px 6px; border-color: var(--accent); }
+.dt-head h2 input.rename { font-size: 17px; }
+.dt-head .row button.dt-rename { font-size: 12px; padding: 4px 10px; flex: none; }
+.dt-head .sub button { font-size: 12px; padding: 1px 8px; }
 .card .s { color: var(--muted); font-size: 12px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .meta { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--chip); color: var(--muted); }
@@ -74,7 +79,8 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 .card .meta .h { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
 .card .acts { display: none; gap: 6px; margin-top: 8px; }
 .card:hover .acts, .card:focus-within .acts { display: flex; }
-.card .acts button { padding: 2px 8px; font-size: 12px; }
+.card .acts { flex-wrap: wrap; }
+.card .acts button { padding: 2px 8px; font-size: 12px; white-space: nowrap; }
 .grid2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; }
 .grid2 .panel { margin-bottom: 0; }
 svg text { fill: var(--muted); font-size: 11px; }
@@ -464,7 +470,7 @@ document.addEventListener("keydown", (e) => {  // "/" focuses search, like GitHu
 });
 
 // ---- task detail modal: where this task's time came from ----
-let detailId = null, detailOpener = null;
+let detailId = null, detailOpener = null, detailTask = null;
 // Shared-folder warning: a worktree name, branch and prompt made from the session's first prompt.
 const STOP = new Set("a an the to of for and or in on at with from by is are be it this that we our my i you can should please".split(" "));
 function worktreeFor(f, s) {
@@ -501,6 +507,7 @@ async function openDetail(id, opener) {
   try { d = await api(`/api/task/${id}`); } catch (e) { toast("Couldn't load task: " + e.message); return; }
   detailId = id; if (opener) detailOpener = opener;
   const t = d.task, tot = d.totals;
+  detailTask = t;
   const split = [["git", "Git"], ["agent", "Agent"], ["timer", "Timer"], ["manual", "Logged"]]
     .map(([k, l]) => `<div><b>${dur(tot[k])}</b><span>${l}</span></div>`).join("");
   const sessions = d.sessions.map(s => {
@@ -524,11 +531,13 @@ async function openDetail(id, opener) {
       <div class="l2">${e.source === "timer" ? "timer" : "logged"} · ${when(e.start)}</div></li>`).join("");
   $("dt-content").innerHTML = `
     <div class="dt-head"><div class="row"><h2 id="dt-title">${esc(t.title)}</h2>
+      <button class="dt-rename" data-rename aria-label="Rename this task">Rename</button>
       <button class="dt-close" aria-label="Close" onclick="document.getElementById('detail').close()">×</button></div>
       <div class="sub"><span class="badge">${esc(t.status === "hold" ? "on hold" : t.status)}</span>
         ${t.repo ? `<span class="badge">${esc(t.repo)}</span>` : ""}${t.branch && t.branch !== t.title ? `<code>${esc(t.branch)}</code>` : ""}
         ${t.ticket ? `<span class="badge">${esc(t.ticket)}</span>` : ""}${t.pr_url ? `<a href="${esc(t.pr_url)}" target="_blank" rel="noopener">PR ↗</a>` : ""}
-        <span>${when(t.first)} → ${ago(t.last)}</span></div></div>
+        <span>${when(t.first)} → ${ago(t.last)}</span>
+        <button data-ticket aria-label="Set the ticket and PR link">${t.ticket || t.pr_url ? "Edit ticket / PR" : "Add ticket / PR"}</button></div></div>
     <div class="dt-body">
       <h3>Time</h3>
       <div class="dt-total"><b>${dur(tot.total)}</b><span>total · overlaps counted once</span></div>
@@ -546,6 +555,8 @@ $("detail").addEventListener("close", () => {  // back to the card (it may have 
   const el = document.querySelector(`.card[data-id="${detailId}"]`) || detailOpener; detailId = null; if (el) el.focus(); });
 $("detail").addEventListener("click", async (e) => {
   if (e.target.id === "detail") return $("detail").close();  // backdrop
+  if (e.target.closest("[data-rename]") && detailTask) return renameInline($("dt-title"), detailTask, null, () => openDetail(detailTask.id));
+  if (e.target.closest("[data-ticket]") && detailTask) return editTicket(detailTask);
   const opener = e.target.closest && e.target.closest("[data-open]");
   if (opener) {
     opener.disabled = true;
@@ -728,20 +739,22 @@ function render() {
 function card(t) {
   return `<div class="card" draggable="true" tabindex="0" data-id="${t.id}" aria-label="${esc(t.title)}: open details">
     <div class="t">${esc(t.title)}</div>
+    ${t.branch && t.branch !== t.title ? `<div class="br">${esc(t.branch)}</div>` : ""}
     ${t.last_subject ? `<div class="s" title="${esc(t.last_subject)}">${esc(t.last_subject)}</div>` : ""}
     <div class="meta">${t.session ? `<span class="badge agent" title="Coding-agent session that hasn't touched a branch: research, questions, planning">agent session</span>` : ""}
       ${t.repo ? `<span class="badge">${esc(t.repo)}</span>` : ""}
       ${t.ticket ? `<span class="badge">${esc(t.ticket)}</span>` : ""}
       ${t.status === "hold" ? `<span class="badge hold" title="${t.held_auto ? "Put on hold automatically: not merged and untouched" : "You put this on hold"}">${t.held_auto && t.last_seen ? "idle " + Math.floor((Date.now() / 1000 - t.last_seen) / 86400) + "d" : "on hold"}</span>` : ""}
       <span class="badge">${ago(t.last)}</span><span class="h">${fmtH(t.hours)}</span></div>
-    <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="edit">Edit</button><button data-act="delete" class="del" title="Delete task">Delete</button></div>
+    <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="rename" aria-label="Rename this task">Rename</button><button data-act="delete" class="del" title="Delete task">Delete</button></div>
   </div>`;
 }
 
 function bindDnD() {
   document.querySelectorAll(".card").forEach(c => {
     c.ondragstart = (e) => e.dataTransfer.setData("text/plain", c.dataset.id);
-    c.onclick = (e) => { const a = e.target.dataset.act;
+    c.onclick = (e) => { if (e.target.closest("input.rename")) return;
+      const a = e.target.dataset.act;
       if (a) cardAction(a, +c.dataset.id, e.target); else openDetail(+c.dataset.id, c); };
     c.onkeydown = (e) => { if (e.key === "Enter" && e.target === c) openDetail(+c.dataset.id, c); };
   });
@@ -754,6 +767,43 @@ function bindDnD() {
       load();
     };
   });
+}
+
+// Rename in place: Enter or clicking away saves, Escape cancels, an empty name goes back to the branch name.
+function renameInline(el, t, host, after) {
+  if (el.querySelector("input")) return;
+  const old = t.title, input = document.createElement("input");
+  input.className = "rename"; input.value = old; input.maxLength = 200;
+  input.setAttribute("aria-label", "Task name");
+  el.textContent = ""; el.appendChild(input); input.focus(); input.select();
+  if (host) host.draggable = false;
+  let done = false;
+  const finish = async (save) => {
+    if (done) return; done = true;
+    if (host) host.draggable = true;
+    const title = input.value.trim() || t.branch || old;
+    el.textContent = save ? title : old;
+    if (save && title !== old) {
+      try {
+        await api(`/api/task/${t.id}`, "PATCH", {title});
+        toast(`Renamed to "${title}"`, "Undo", async () => {
+          await api(`/api/task/${t.id}`, "PATCH", {title: old}); toast("Name restored"); load(); if (after) after();
+        });
+      } catch (e) { el.textContent = old; toast("Couldn't rename: " + e.message); }
+      load(); if (after) after();
+    }
+  };
+  input.onkeydown = (e) => { e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    if (e.key === "Escape") { e.preventDefault(); finish(false); } };
+  input.onblur = () => finish(true);
+  ["click", "dblclick", "mousedown", "dragstart"].forEach(ev => input.addEventListener(ev, e => e.stopPropagation()));
+}
+
+async function editTicket(t) {
+  const ticket = window.prompt("Ticket (e.g. WEB-142)", t.ticket || ""); if (ticket === null) return;
+  const pr_url = window.prompt("PR URL", t.pr_url || ""); if (pr_url === null) return;
+  await api(`/api/task/${t.id}`, "PATCH", {ticket, pr_url}); load(); openDetail(t.id);
 }
 
 async function cardAction(act, id, btn) {
@@ -777,11 +827,9 @@ async function cardAction(act, id, btn) {
     const note = window.prompt("Note (optional)", "") || "";
     await api("/api/log", "POST", {task_id: id, minutes: +v, note}); toast(`Logged ${v}m`);
   }
-  if (act === "edit") {
-    const title = window.prompt("Title", t.title); if (title === null) return;
-    const ticket = window.prompt("Ticket (e.g. WEB-142)", t.ticket || ""); if (ticket === null) return;
-    const pr_url = window.prompt("PR URL", t.pr_url || ""); if (pr_url === null) return;
-    await api(`/api/task/${id}`, "PATCH", {title, ticket, pr_url});
+  if (act === "rename") {
+    const c = document.querySelector(`.card[data-id="${id}"]`);
+    return renameInline(c.querySelector(".t"), t, c);
   }
   load();
 }
