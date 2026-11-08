@@ -65,6 +65,18 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 8px; cursor: grab; }
 .card:active { cursor: grabbing; }
 .card .t { font-weight: 600; word-break: break-word; }
+.saved { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: -4px 0 16px; }
+.saved:empty { display: none; }
+.saved .lbl { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-right: 2px; }
+.saved .chip { display: inline-flex; align-items: stretch; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); max-width: 100%; }
+.saved .chip button { border: 0; background: none; border-radius: 8px; }
+.saved .chip .go { display: flex; gap: 8px; align-items: baseline; padding: 6px 4px 6px 10px; min-width: 0; text-align: left; }
+.saved .chip .go b { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.saved .chip .go span { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.saved .chip .x { padding: 0 9px; color: var(--muted); font-size: 15px; }
+.saved .chip .x:hover { color: var(--ink); }
+.saved .chip:hover { border-color: var(--accent); }
+.badge.saved-b { color: var(--accent); }
 .card .br { font-size: 11px; color: var(--muted); margin-top: 2px; word-break: break-all; }
 input.rename { width: 100%; font: inherit; font-weight: 600; padding: 3px 6px; border-color: var(--accent); }
 .dt-head h2 input.rename { font-size: 17px; }
@@ -253,6 +265,7 @@ dialog#detail::backdrop { background: rgba(0,0,0,.45); }
 
   <nav class="tabs" id="tabs" role="tablist" aria-label="Projects"></nav>
   <div class="projhead"><h2 id="projName"></h2><span id="projRepos"></span><div class="untrack" id="untrack"></div></div>
+  <nav class="saved" id="saved" aria-label="Saved for later"></nav>
 
   <section class="kpis" id="kpis"></section>
 
@@ -531,6 +544,7 @@ async function openDetail(id, opener) {
       <div class="l2">${e.source === "timer" ? "timer" : "logged"} · ${when(e.start)}</div></li>`).join("");
   $("dt-content").innerHTML = `
     <div class="dt-head"><div class="row"><h2 id="dt-title">${esc(t.title)}</h2>
+      <button class="dt-rename" data-save aria-pressed="${!!(data.tasks.find(x => x.id === t.id) || {}).saved}">${(data.tasks.find(x => x.id === t.id) || {}).saved ? "★ Saved" : "☆ Save for later"}</button>
       <button class="dt-rename" data-rename aria-label="Rename this task">Rename</button>
       <button class="dt-close" aria-label="Close" onclick="document.getElementById('detail').close()">×</button></div>
       <div class="sub"><span class="badge">${esc(t.status === "hold" ? "on hold" : t.status)}</span>
@@ -557,6 +571,10 @@ $("detail").addEventListener("click", async (e) => {
   if (e.target.id === "detail") return $("detail").close();  // backdrop
   if (e.target.closest("[data-rename]") && detailTask) return renameInline($("dt-title"), detailTask, null, () => openDetail(detailTask.id));
   if (e.target.closest("[data-ticket]") && detailTask) return editTicket(detailTask);
+  if (e.target.closest("[data-save]") && detailTask) {
+    const t = data.tasks.find(x => x.id === detailTask.id) || detailTask;
+    return setSaved(t, !t.saved);
+  }
   const opener = e.target.closest && e.target.closest("[data-open]");
   if (opener) {
     opener.disabled = true;
@@ -576,6 +594,12 @@ $("detail").addEventListener("click", async (e) => {
   if (!text) return;
   try { await navigator.clipboard.writeText(text); toast("Copied: " + (text.length > 60 ? text.slice(0, 57) + "…" : text)); }
   catch (err) { window.prompt("Copy this:", text); }
+});
+
+$("saved").addEventListener("click", (e) => {
+  const open = e.target.closest("[data-saved-open]"), rm = e.target.closest("[data-saved-remove]");
+  if (open) openDetail(+open.dataset.savedOpen, open);
+  if (rm) { const t = data.tasks.find(x => x.id === +rm.dataset.savedRemove); if (t) setSaved(t, false); }
 });
 
 $("shared").addEventListener("click", async (e) => {
@@ -649,6 +673,7 @@ function renderTabs() {
   $("projName").textContent = project;
   $("projRepos").textContent = view.repos.length === 1 && view.repos[0] === project ? "" : view.repos.join(" · ");
   renderUntrack(false);
+  renderSaved();
   $("tableTitle").textContent = project === ALL ? "All tasks" : `All ${project} tasks`;
   const sel = $("addRepo"), keep = sel.value;
   sel.innerHTML = view.repos.map(r => `<option>${esc(r)}</option>`).join("") + '<option value="">no repo</option>';
@@ -741,12 +766,12 @@ function card(t) {
     <div class="t">${esc(t.title)}</div>
     ${t.branch && t.branch !== t.title ? `<div class="br">${esc(t.branch)}</div>` : ""}
     ${t.last_subject ? `<div class="s" title="${esc(t.last_subject)}">${esc(t.last_subject)}</div>` : ""}
-    <div class="meta">${t.session ? `<span class="badge agent" title="Coding-agent session that hasn't touched a branch: research, questions, planning">agent session</span>` : ""}
+    <div class="meta">${t.saved ? `<span class="badge saved-b" title="Saved for later">★ saved</span>` : ""}${t.session ? `<span class="badge agent" title="Coding-agent session that hasn't touched a branch: research, questions, planning">agent session</span>` : ""}
       ${t.repo ? `<span class="badge">${esc(t.repo)}</span>` : ""}
       ${t.ticket ? `<span class="badge">${esc(t.ticket)}</span>` : ""}
       ${t.status === "hold" ? `<span class="badge hold" title="${t.held_auto ? "Put on hold automatically: not merged and untouched" : "You put this on hold"}">${t.held_auto && t.last_seen ? "idle " + Math.floor((Date.now() / 1000 - t.last_seen) / 86400) + "d" : "on hold"}</span>` : ""}
       <span class="badge">${ago(t.last)}</span><span class="h">${fmtH(t.hours)}</span></div>
-    <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="rename" aria-label="Rename this task">Rename</button><button data-act="delete" class="del" title="Delete task">Delete</button></div>
+    <div class="acts"><button data-act="start">▶ Timer</button><button data-act="log">+ Log</button><button data-act="rename" aria-label="Rename this task">Rename</button><button data-act="save" aria-pressed="${!!t.saved}" aria-label="${t.saved ? "Remove from saved" : "Save for later"}">${t.saved ? "★ Saved" : "☆ Save"}</button><button data-act="delete" class="del" title="Delete task">Delete</button></div>
   </div>`;
 }
 
@@ -800,6 +825,22 @@ function renameInline(el, t, host, after) {
   ["click", "dblclick", "mousedown", "dragstart"].forEach(ev => input.addEventListener(ev, e => e.stopPropagation()));
 }
 
+async function setSaved(t, on) {
+  try { await api(`/api/task/${t.id}`, "PATCH", {saved: on}); }
+  catch (e) { return toast("Couldn't save: " + e.message); }
+  toast(on ? `Saved "${t.title}" for later` : `Removed "${t.title}" from saved`, "Undo", async () => {
+    await api(`/api/task/${t.id}`, "PATCH", {saved: !on}); load(); });
+  await load();  // also refreshes an open task modal
+}
+
+function renderSaved() {
+  const items = view.tasks.filter(t => t.saved).sort((a, b) => b.saved - a.saved);
+  $("saved").innerHTML = items.length ? `<span class="lbl">Saved for later</span>` + items.map(t =>
+    `<span class="chip"><button class="go" data-saved-open="${t.id}" title="${esc(t.title)}${t.branch && t.branch !== t.title ? " · " + esc(t.branch) : ""}">
+       <b>${esc(t.title)}</b><span>${esc(t.status === "hold" ? "on hold" : t.status)} · ${fmtH(t.hours)}</span></button>
+     <button class="x" data-saved-remove="${t.id}" aria-label="Remove ${esc(t.title)} from saved">×</button></span>`).join("") : "";
+}
+
 async function editTicket(t) {
   const ticket = window.prompt("Ticket (e.g. WEB-142)", t.ticket || ""); if (ticket === null) return;
   const pr_url = window.prompt("PR URL", t.pr_url || ""); if (pr_url === null) return;
@@ -820,6 +861,7 @@ async function cardAction(act, id, btn) {
       await api(`/api/task/${id}`, "PATCH", {deleted: false}); toast("Restored"); load();
     });
   }
+  if (act === "save") { await setSaved(t, !t.saved); return; }
   if (act === "start") { await api("/api/timer", "POST", {action: "start", task_id: id}); toast("Timer: " + t.title); }
   if (act === "log") {
     const v = window.prompt(`Minutes to log on "${t.title}"`, "30");

@@ -84,6 +84,10 @@ Because the command is named `git-timelog`, git exposes it as a subcommand: `git
   the name in place (Enter saves, Esc cancels, an empty name goes back to the branch name); the
   branch stays visible under a renamed card. The done column shows its 8 newest cards, with
   "Show N more" for the rest.
+- **Saved for later:** hover a card and click **☆ Save** (or **Save for later** in its details) to
+  bookmark it. Saved tasks appear as a row of buttons under the project name, newest first; click
+  one to open its details and resume any of its sessions, or × to remove it. Saving doesn't count
+  as activity, so it never reopens a task or changes its "last active" time.
 - **Search:** press `/` (or click the search box) and type at least two letters. It searches every
   project at once: task names, branches, tickets, notes, commit messages and the first prompt of
   each agent session, so "the one where I asked about Safari" finds its task. Arrow keys and Enter

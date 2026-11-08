@@ -365,6 +365,26 @@ class CliTest(unittest.TestCase):
         self.assertEqual((last[1], last[3], len(last)), ("checkout", "feat/x", 8))
         self.assertEqual(Path(last[7]).resolve(), self.repo.resolve())
 
+    def test_save_for_later_marks_a_task_without_touching_its_activity(self):
+        self.tl("init", "--days", "0")
+        self.git("checkout", "-q", "-b", "feat/later")
+        self.commit("start")
+        before = next(t for t in self.summary()["tasks"] if t["branch"] == "feat/later")
+        self.assertIsNone(before["saved"])
+        code = (
+            "import importlib.machinery, importlib.util, sys;"
+            f"l = importlib.machinery.SourceFileLoader('gtl', {str(CLI)!r});"
+            "s = importlib.util.spec_from_loader('gtl', l); m = importlib.util.module_from_spec(s);"
+            "l.exec_module(m); m.update_task(m.db(), int(sys.argv[1]), {'saved': sys.argv[2] == '1'})"
+        )
+        run = lambda on: subprocess.run([sys.executable, "-c", code, str(before["id"]), on], env=self.env, check=True)
+        run("1")
+        after = next(t for t in self.summary()["tasks"] if t["id"] == before["id"])
+        self.assertTrue(after["saved"])
+        self.assertEqual((after["last"], after["status"]), (before["last"], before["status"]))
+        run("0")
+        self.assertIsNone(next(t for t in self.summary()["tasks"] if t["id"] == before["id"])["saved"])
+
     def test_research_only_session_gets_its_own_card(self):
         self.tl("init", "--days", "0")
         self.agent(0, "main", "s-B", "prompt|how does auth work")

@@ -176,6 +176,9 @@ def db():
     if "session" not in [r[1] for r in con.execute("PRAGMA table_info(tasks)")]:
         # coding-agent session id, for sessions that never left a base branch (research tasks)
         con.execute("ALTER TABLE tasks ADD COLUMN session TEXT")
+    if "saved" not in [r[1] for r in con.execute("PRAGMA table_info(tasks)")]:
+        # when you saved the task for later (bookmarked it), or NULL
+        con.execute("ALTER TABLE tasks ADD COLUMN saved INTEGER")
     return con
 
 
@@ -1132,6 +1135,9 @@ def create_task(con, title, repo=None, status="todo"):
 
 
 def update_task(con, tid, fields):
+    if "saved" in fields:  # a bookmark, not work: leaves the task's last-activity time alone
+        con.execute("UPDATE tasks SET saved=? WHERE id=?", (now() if fields["saved"] else None, tid))
+        con.commit()
     allowed = {k: v for k, v in fields.items() if k in ("title", "status", "ticket", "pr_url", "note")}
     if "status" in allowed and allowed["status"] not in STATUSES:
         raise ValueError(f"status must be one of {', '.join(STATUSES)}")
